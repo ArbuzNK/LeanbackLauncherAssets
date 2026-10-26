@@ -105,9 +105,9 @@ import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -440,6 +440,7 @@ fun prefetchBannerSizes(context: Context, programs: Sequence<LiveProgramInfo>) {
         .forEach { uri ->
             val request = ImageRequest.Builder(context)
                 .data(uri)
+                .size(600, 340)
                 .crossfade(false)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
@@ -728,8 +729,10 @@ class MainActivity : ComponentActivity() {
                             context,
                             fetched.asSequence().flatMap { it.programs.asSequence() }
                         )
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
-                        Log.e("LauncherData", "Ошибка получения рекомендаций: ${e.message}")
+                        Log.e("LauncherData", "Ошибка получения рекомендаций", e)
                         withContext(Dispatchers.Main) {
                             liveChannels = emptyList()
                         }
@@ -2694,12 +2697,60 @@ fun MainScreen(
         ),
         label = "RecommendationsSeparation"
     )
-    val favoritesSeparationY by animateDpAsState(
+    val favoritesSeparationState = animateDpAsState(
         targetValue = if (moveModePackage != null) {
-            moveModeLockedSectionOffsets?.get("favorites") ?: targetSectionSeparation("favorites")
-        } else targetSectionSeparation("favorites"),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            moveModeLockedSectionOffsets?.get("favorites")
+                ?: targetSectionSeparation("favorites")
+        } else {
+            targetSectionSeparation("favorites")
+        },
+        animationSpec = tween(
+            durationMillis = 220,
+            easing = FastOutSlowInEasing
+        ),
         label = "FavoritesSeparation"
+    )
+
+    val appsSeparationState = animateDpAsState(
+        targetValue = if (moveModePackage != null) {
+            moveModeLockedSectionOffsets?.get("apps")
+                ?: targetSectionSeparation("apps")
+        } else {
+            targetSectionSeparation("apps")
+        },
+        animationSpec = tween(
+            durationMillis = 220,
+            easing = FastOutSlowInEasing
+        ),
+        label = "AppsSeparation"
+    )
+
+    val inputsSeparationState = animateDpAsState(
+        targetValue = if (moveModePackage != null) {
+            moveModeLockedSectionOffsets?.get("inputs")
+                ?: targetSectionSeparation("inputs")
+        } else {
+            targetSectionSeparation("inputs")
+        },
+        animationSpec = tween(
+            durationMillis = 220,
+            easing = FastOutSlowInEasing
+        ),
+        label = "InputsSeparation"
+    )
+
+    val gamesSeparationState = animateDpAsState(
+        targetValue = if (moveModePackage != null) {
+            moveModeLockedSectionOffsets?.get("games")
+                ?: targetSectionSeparation("games")
+        } else {
+            targetSectionSeparation("games")
+        },
+        animationSpec = tween(
+            durationMillis = 220,
+            easing = FastOutSlowInEasing
+        ),
+        label = "GamesSeparation"
     )
     val appsSeparationY by animateDpAsState(
         targetValue = if (moveModePackage != null) {
@@ -2824,8 +2875,11 @@ fun MainScreen(
         label = "FavoritesRowEntranceAlpha"
     )
     val appsRowScale by animateFloatAsState(
-        targetValue = if (isAppsSectionActive) 1.02f else 0.98f,
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        targetValue = if (isAppsSectionActive) 1.02f else 1f,
+        animationSpec = tween(
+            durationMillis = 220,
+            easing = FastOutSlowInEasing
+        ),
         label = "AppsRowScale"
     )
     val appsRowAlpha by animateFloatAsState(
