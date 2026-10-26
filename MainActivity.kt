@@ -106,6 +106,8 @@ import java.util.concurrent.ConcurrentHashMap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -2679,11 +2681,17 @@ fun MainScreen(
     }
 
 
-    val recommendationsSeparationY by animateDpAsState(
+    val recommendationsSeparationState = animateDpAsState(
         targetValue = if (moveModePackage != null) {
-            moveModeLockedSectionOffsets?.get("recommendations") ?: targetSectionSeparation("recommendations")
-        } else targetSectionSeparation("recommendations"),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            moveModeLockedSectionOffsets?.get("recommendations")
+                ?: targetSectionSeparation("recommendations")
+        } else {
+            targetSectionSeparation("recommendations")
+        },
+        animationSpec = tween(
+            durationMillis = 220,
+            easing = FastOutSlowInEasing
+        ),
         label = "RecommendationsSeparation"
     )
     val favoritesSeparationY by animateDpAsState(
@@ -2767,11 +2775,6 @@ fun MainScreen(
 
     // Hard-lock the rendered translation during move mode. Stopping Animatable alone is not
     // enough if focus changes produce new targets while cards are being reordered.
-    val contentOffsetY = if (moveModePackage != null) {
-        moveModeLockedContentOffsetPx
-    } else {
-        contentOffset.value
-    }
 
     // Capture the wallpaper parallax target only when the active section changes.
     // Movement between multiple app lines therefore cannot move the wallpaper.
@@ -3107,7 +3110,13 @@ fun MainScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer { translationY = contentOffsetY }
+                .graphicsLayer {
+                    translationY = if (moveModePackage != null) {
+                        moveModeLockedContentOffsetPx
+                    } else {
+                        contentOffset.value
+                    }
+                }
         ) {
             // ВЕРХНЯЯ ПАНЕЛЬ
             Row(
@@ -3194,7 +3203,12 @@ fun MainScreen(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .offset(y = recommendationsPositionShiftY)
+                    .offset {
+                        IntOffset(
+                            x = 0,
+                            y = recommendationsPositionShiftAnim.value.roundToInt()
+                        )
+                    }
                     .padding(bottom = 16.dp)
                     .fillMaxWidth()
                     .wrapContentHeight(),
@@ -3215,7 +3229,12 @@ fun MainScreen(
                                     activeRowTitle = null
                                 }
                             }
-                            .offset(y = recommendationsSeparationY)
+                            .offset {
+                                IntOffset(
+                                    x = 0,
+                                    y = recommendationsSeparationState.value.roundToPx()
+                                )
+                            }
                             .zIndex(if (visualFocusedRowIndex == 0) 5f else 1f)
                     ) {
                         Box(
@@ -3316,7 +3335,13 @@ fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(85.dp)
-                        .offset(y = with(density) { favoritesRowTopPx.toDp() } + favoritesSeparationY)
+                        .offset {
+                            IntOffset(
+                                x = 0,
+                                y = favoritesRowTopPx.roundToInt() +
+                                        favoritesSeparationState.value.roundToPx()
+                            )
+                        }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
                                 focusedRowIndex = favoritesRowIndex
@@ -3347,7 +3372,11 @@ fun MainScreen(
                         ) {
                             favoriteRowApps.forEachIndexed { favoriteIndex, favoriteApp ->
                                 key(favoriteApp.packageName) {
-                                    val isGameFavorite = games.any { it.packageName == favoriteApp.packageName }
+                                    val gamePackageNames = remember(games) {
+                                        games.mapTo(HashSet()) { it.packageName }
+                                    }
+                                    val isGameFavorite =
+                                        favoriteApp.packageName in gamePackageNames
                                     val upRequester = sectionNeighborRequester(
                                         "favorites", moveUp = true, preferredIndex = favoriteIndex
                                     )
@@ -3910,14 +3939,14 @@ fun MainScreen(
                                 // Snapshot all independently animated positions before entering move mode.
                                 // This keeps the content, section gaps, and wallpaper stationary while
                                 // focus follows the reordered card. Existing animations resume on exit.
-                                moveModeLockedContentOffsetPx = contentOffsetY
+                                moveModeLockedContentOffsetPx = contentOffset.value
                                 moveModeStartFocusedRowIndex = focusedRowIndex
                                 moveModeLockedSectionOffsets = mapOf(
-                                    "recommendations" to recommendationsSeparationY,
-                                    "favorites" to favoritesSeparationY,
-                                    "apps" to appsSeparationY,
-                                    "inputs" to inputsSeparationY,
-                                    "games" to gamesSeparationY
+                                    "recommendations" to recommendationsSeparationState.value,
+                                    "favorites" to favoritesSeparationState.value,
+                                    "apps" to appsSeparationState.value,
+                                    "inputs" to inputsSeparationState.value,
+                                    "games" to gamesSeparationState.value
                                 )
                                 moveModeLockedBackgroundOffsetPx = bgOffsetY
                                 moveModePackage = app.packageName
