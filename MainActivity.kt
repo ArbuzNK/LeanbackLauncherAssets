@@ -2548,6 +2548,49 @@ fun MainScreen(
         positions
     }
 
+    // Стабильная геометрия для расчёта положения рекомендаций.
+// Она не зависит от compactLowerSections и смены фокуса.
+    val recommendationsTopForShiftPx = remember(
+        visibleSectionOrder,
+        sectionHeightsPx,
+        appsAnchorTopPx,
+        density
+    ) {
+        val positions = mutableMapOf<String, Float>()
+
+        val appsIndex = visibleSectionOrder.indexOf("apps")
+        var topBeforeAppsPx = appsAnchorTopPx
+
+        if (appsIndex > 0) {
+            for (index in (appsIndex - 1) downTo 0) {
+                val previous = visibleSectionOrder[index]
+                val next = visibleSectionOrder[index + 1]
+
+                topBeforeAppsPx -=
+                    sectionHeightsPx.getValue(previous) +
+                            sectionGapPx(previous, next, compact = false)
+            }
+        }
+
+        if (visibleSectionOrder.isNotEmpty()) {
+            positions[visibleSectionOrder.first()] = topBeforeAppsPx
+
+            for (index in 0 until visibleSectionOrder.lastIndex) {
+                val previous = visibleSectionOrder[index]
+                val next = visibleSectionOrder[index + 1]
+
+                positions[next] =
+                    positions.getValue(previous) +
+                            sectionHeightsPx.getValue(previous) +
+                            sectionGapPx(previous, next, compact = false)
+            }
+        }
+
+        positions["recommendations"]
+            ?: (appsAnchorTopPx -
+                    sectionHeightsPx.getValue("recommendations") -
+                    with(density) { 16.dp.toPx() })
+    }
     val favoritesRowTopPx = sectionTopPositionsPx["favorites"] ?: (
             appsAnchorTopPx - with(density) { 85.dp.toPx() } - with(density) { 16.dp.toPx() }
             )
@@ -2567,7 +2610,7 @@ fun MainScreen(
     // to make room for it. Animate that reflow instead of jumping instantly;
     // keep the top toolbar anchored at the top of the screen.
     val recommendationsPositionShiftTargetPx =
-        recommendationsTopPx - defaultRecommendationsTopPx
+        recommendationsTopForShiftPx - defaultRecommendationsTopPx
     val recommendationsPositionShiftAnim = remember { Animatable(0f) }
     var recommendationsShiftInitialized by remember { mutableStateOf(false) }
     LaunchedEffect(recommendationsPositionShiftTargetPx, moveModePackage) {
