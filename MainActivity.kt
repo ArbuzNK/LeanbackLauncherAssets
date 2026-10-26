@@ -108,6 +108,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
+import androidx.compose.foundation.lazy.items
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -2227,6 +2228,7 @@ fun MainScreen(
 
     val recommendationsListState = rememberLazyListState()
     val favoritesHorizontalScrollState = rememberScrollState()
+    val appsHorizontalListState = rememberLazyListState()
     val appsSectionListState = rememberLazyListState()
     val inputsListState = rememberLazyListState()
     val gamesListState = rememberLazyListState()
@@ -3551,20 +3553,27 @@ fun MainScreen(
                         .zIndex(if (isAppsSectionActive) 5f else 1f)
                 ) {
                     // Заменяем LazyRow на обычный Row с horizontalScroll, чтобы ни одна колонка не удалялась из памяти
-                    androidx.compose.foundation.layout.Row(
+                    LazyRow(
+                        state = appsHorizontalListState,
                         modifier = Modifier
                             .focusRestorer()
                             .fillMaxWidth()
-                            .height(appSectionHeight)
-                            .horizontalScroll(horizontalScrollState)
-                            .padding(horizontal = 48.dp),
+                            .height(appSectionHeight),
+                        contentPadding = PaddingValues(horizontal = 48.dp),
                         horizontalArrangement = Arrangement.spacedBy(appCardHorizontalGap)
                     ) {
-                        for (slotIndex in 0 until normalizedMaxAppsPerRow) {
+                        items(
+                            count = normalizedMaxAppsPerRow,
+                            key = { slotIndex -> "apps-column-$slotIndex" },
+                            contentType = { "apps-column" }
+                        ) { slotIndex ->
                             Column(
                                 modifier = Modifier
                                     .zIndex(
-                                        if (isAppsSectionActive && focusedAppColumnIndex == slotIndex) 10f else 0f
+                                        if (
+                                            isAppsSectionActive &&
+                                            focusedAppColumnIndex == slotIndex
+                                        ) 10f else 0f
                                     )
                                     .width(appCardWidth)
                                     .height(appSectionHeight),
