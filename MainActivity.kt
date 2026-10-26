@@ -108,7 +108,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
-import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.draw.drawWithContent
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -267,11 +267,20 @@ fun AppCard(
     // Handle the held key explicitly so long-press opens the card menu on Android TV.
     var dpadSelectDownTime by remember { mutableLongStateOf(-1L) }
 
+
     val scaleAnimated by animateFloatAsState(
         targetValue = if (isFocused && !isFastScrolling) 1.15f else 1.0f,
-        animationSpec = if (isFastScrolling) snap() else tween(durationMillis = 120),
+        animationSpec = if (isFastScrolling) {
+            snap()
+        } else {
+            tween(
+                durationMillis = 180,
+                easing = CubicBezierEasing(0.0f, 0.58f, 1.0f, 1.0f)
+            )
+        },
         label = "AppScale"
     )
+
 
     Box(
         modifier = modifier
@@ -2735,9 +2744,10 @@ fun MainScreen(
         } else {
             targetSectionSeparation("recommendations")
         },
+
         animationSpec = tween(
-            durationMillis = 220,
-            easing = FastOutSlowInEasing
+            durationMillis = 420,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
         ),
         label = "RecommendationsSeparation"
     )
@@ -2748,9 +2758,10 @@ fun MainScreen(
         } else {
             targetSectionSeparation("favorites")
         },
+
         animationSpec = tween(
-            durationMillis = 220,
-            easing = FastOutSlowInEasing
+            durationMillis = 420,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
         ),
         label = "FavoritesSeparation"
     )
@@ -2758,21 +2769,33 @@ fun MainScreen(
         targetValue = if (moveModePackage != null) {
             moveModeLockedSectionOffsets?.get("apps") ?: targetSectionSeparation("apps")
         } else targetSectionSeparation("apps"),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+
+        animationSpec = tween(
+            durationMillis = 420,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
+        ),
         label = "AppsSeparation"
     )
     val inputsSeparationY by animateDpAsState(
         targetValue = if (moveModePackage != null) {
             moveModeLockedSectionOffsets?.get("inputs") ?: targetSectionSeparation("inputs")
         } else targetSectionSeparation("inputs"),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+
+        animationSpec = tween(
+            durationMillis = 420,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
+        ),
         label = "InputsSeparation"
     )
     val gamesSeparationY by animateDpAsState(
         targetValue = if (moveModePackage != null) {
             moveModeLockedSectionOffsets?.get("games") ?: targetSectionSeparation("games")
         } else targetSectionSeparation("games"),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+
+        animationSpec = tween(
+            durationMillis = 420,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
+        ),
         label = "GamesSeparation"
     )
 
@@ -2784,9 +2807,11 @@ fun MainScreen(
         } else {
             targetSectionSeparation("apps")
         },
+
+
         animationSpec = tween(
-            durationMillis = 220,
-            easing = FastOutSlowInEasing
+            durationMillis = 420,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
         ),
         label = "AppsSeparation"
     )
@@ -2798,9 +2823,10 @@ fun MainScreen(
         } else {
             targetSectionSeparation("inputs")
         },
+
         animationSpec = tween(
-            durationMillis = 220,
-            easing = FastOutSlowInEasing
+            durationMillis = 420,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
         ),
         label = "InputsSeparation"
     )
@@ -2812,9 +2838,10 @@ fun MainScreen(
         } else {
             targetSectionSeparation("games")
         },
+
         animationSpec = tween(
-            durationMillis = 220,
-            easing = FastOutSlowInEasing
+            durationMillis = 420,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
         ),
         label = "GamesSeparation"
     )
@@ -2859,9 +2886,10 @@ fun MainScreen(
                     contentOffset.animateTo(
                         targetValue = targetPx,
                         animationSpec = tween(
-                            durationMillis = 260,
-                            easing = FastOutSlowInEasing
+                            durationMillis = 420,
+                            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
                         )
+
                     )
                 }
             }
