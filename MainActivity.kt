@@ -987,31 +987,47 @@ class MainActivity : ComponentActivity() {
                 if (isSettingsOpen) {
                     Dialog(
                         onDismissRequest = { isSettingsOpen = false },
-                        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+                        properties = DialogProperties(
+                            usePlatformDefaultWidth = false,
+                            decorFitsSystemWindows = false
+                        )
                     ) {
                         SettingsScreen(
                             showRecommendations = showRecommendations,
-                            onToggleRecommendations = { newValue ->
-                                showRecommendations = newValue
-                                sharedPrefs.edit().putBoolean("show_recommendations", newValue).apply()
+                            onToggleRecommendations = { enabled ->
+                                showRecommendations = enabled
+                                sharedPrefs.edit()
+                                    .putBoolean("show_recommendations", enabled)
+                                    .apply()
                                 triggerReloadRecommendations()
                             },
                             maxAppsPerRow = maxAppsPerRow,
-                            onMaxAppsPerRowChange = { newValue ->
-                                val boundedValue = newValue.coerceIn(4, 50)
-                                maxAppsPerRow = boundedValue
-                                sharedPrefs.edit().putInt("max_apps_per_row", boundedValue).apply()
+                            onMaxAppsPerRowChange = { requestedValue ->
+                                val value = requestedValue.coerceIn(4, 50)
+                                maxAppsPerRow = value
+                                sharedPrefs.edit()
+                                    .putInt("max_apps_per_row", value)
+                                    .apply()
                             },
                             sectionOrder = sectionOrder,
                             onMoveSection = { sectionKey, newIndex ->
                                 val updatedOrder = sectionOrder.toMutableList()
                                 val oldIndex = updatedOrder.indexOf(sectionKey)
-                                if (oldIndex >= 0 && newIndex in updatedOrder.indices && oldIndex != newIndex) {
+
+                                if (
+                                    oldIndex >= 0 &&
+                                    newIndex in updatedOrder.indices &&
+                                    oldIndex != newIndex
+                                ) {
                                     updatedOrder.removeAt(oldIndex)
                                     updatedOrder.add(newIndex, sectionKey)
                                     sectionOrder = updatedOrder
+
                                     sharedPrefs.edit()
-                                        .putString("section_order", updatedOrder.joinToString(","))
+                                        .putString(
+                                            "section_order",
+                                            updatedOrder.joinToString(",")
+                                        )
                                         .apply()
                                 }
                             },
@@ -1031,7 +1047,13 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                     enabledChannelIds.add(channelId)
                                 }
-                                sharedPrefs.edit().putStringSet("enabled_channel_ids", enabledChannelIds.map { it.toString() }.toSet()).apply()
+
+                                sharedPrefs.edit()
+                                    .putStringSet(
+                                        "enabled_channel_ids",
+                                        enabledChannelIds.map { it.toString() }.toSet()
+                                    )
+                                    .apply()
                                 triggerReloadRecommendations()
                             },
                             onToggleMixChannel = { channelId ->
@@ -1040,20 +1062,31 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                     mixChannelIds.add(channelId)
                                 }
-                                sharedPrefs.edit().putStringSet("mix_channel_ids", mixChannelIds.map { it.toString() }.toSet()).apply()
+
+                                sharedPrefs.edit()
+                                    .putStringSet(
+                                        "mix_channel_ids",
+                                        mixChannelIds.map { it.toString() }.toSet()
+                                    )
+                                    .apply()
                             },
                             installedApps = installedApps,
                             hiddenApps = hiddenApps,
-                            onToggleAppVisibility = { pkg ->
-                                if (hiddenApps.contains(pkg)) {
-                                    hiddenApps.remove(pkg)
+                            onToggleAppVisibility = { packageName ->
+                                if (hiddenApps.contains(packageName)) {
+                                    hiddenApps.remove(packageName)
                                 } else {
-                                    hiddenApps.add(pkg)
+                                    hiddenApps.add(packageName)
                                 }
-                                sharedPrefs.edit().putStringSet("hidden_packages", hiddenApps.toSet()).apply()
+
+                                sharedPrefs.edit()
+                                    .putStringSet("hidden_packages", hiddenApps.toSet())
+                                    .apply()
                             },
                             hasCustomWallpaper = currentBgUri != null,
-                            onSelectWallpaper = { wallpaperLauncher.launch(arrayOf("image/*")) },
+                            onSelectWallpaper = {
+                                wallpaperLauncher.launch(arrayOf("image/*"))
+                            },
                             onResetWallpaper = {
                                 sharedPrefs.edit().remove("bg_uri").apply()
                                 currentBgUri = null
@@ -2231,6 +2264,13 @@ fun MainScreen(
     var moveModeConsumedKeyUp by remember { mutableIntStateOf(KeyEvent.KEYCODE_UNKNOWN) }
     var focusedRowIndex by remember { mutableIntStateOf(0) }
     var focusedAppColumnIndex by remember { mutableIntStateOf(0) }
+    // Each section remembers its own selection; never derive the target card
+    // from the column/index of the section we're leaving.
+    var lastFocusedAppsRowOffset by remember { mutableIntStateOf(0) }
+    var lastFocusedAppsColumn by remember { mutableIntStateOf(0) }
+    var lastFocusedFavoriteIndex by remember { mutableIntStateOf(0) }
+    var lastFocusedInputIndex by remember { mutableIntStateOf(0) }
+    var lastFocusedGameIndex by remember { mutableIntStateOf(0) }
     var activeRowTitle by remember { mutableStateOf<String?>(null) }
     // Use an immediate content shift when focus moves between wrapped app rows,
     // so the newly focused card is already on the fixed focus line.
@@ -2451,25 +2491,10 @@ fun MainScreen(
         }
     }.let { ordered -> if ("apps" in ordered) ordered else listOf("apps") }
 
-    // When Favorites is inserted before Apps, reserve one row (85.dp) plus its
-    // 16.dp gap by moving the Apps anchor and all sections below it downward.
-    // This keeps Recommendations at its previous position instead of pulling the
-    // entire visible stack upward when the first favorite is added.
-    val appsOrderIndexForLayout = visibleSectionOrder.indexOf("apps")
-    val favoritesOrderIndexForLayout = visibleSectionOrder.indexOf("favorites")
-    val favoriteRowPushDownPx = if (
-        hasFavoritesSection &&
-        favoritesOrderIndexForLayout >= 0 &&
-        appsOrderIndexForLayout >= 0 &&
-        favoritesOrderIndexForLayout < appsOrderIndexForLayout
-    ) {
-        with(density) { (85.dp + 16.dp).toPx() }
-    } else {
-        0f
-    }
-    val appsAnchorTopPx = rootHeightPx.toFloat() - with(density) {
-        (16.dp + appsAnchorHeight).toPx()
-    } + favoriteRowPushDownPx
+    // One shared stack origin: sections flow in visibleSectionOrder from this
+    // point. No section (including Apps or Recommendations) is used as an anchor.
+    val defaultRecommendationsTopPx = rootHeightPx.toFloat() - recommendationsHeightPx.toFloat() -
+            with(density) { 117.dp.toPx() }
     // Cache derived layout data so ordinary focus/recomposition updates do not
     // recreate the section-height and section-position maps every time.
     val sectionHeightsPx = remember(recommendationsHeightPx, appSectionHeight, density) {
@@ -2525,127 +2550,36 @@ fun MainScreen(
         }
     }
 
-    // Lay out sections in the saved order. Apps is not pinned to its old
-    // coordinate, so moving a section above it correctly moves Apps down.
+    // Lay out every section as one ordered stack. Positions are derived from
+    // the stack origin and preceding section heights, never backwards from Apps.
     val sectionTopPositionsPx = remember(
         visibleSectionOrder,
         sectionHeightsPx,
-        appsAnchorTopPx,
+        defaultRecommendationsTopPx,
         compactLowerSections
     ) {
         val positions = mutableMapOf<String, Float>()
-        val canonicalVisibleOrder = visibleSectionOrder
-
-        var canonicalTopBeforeAppsPx = appsAnchorTopPx
-        val canonicalAppsIndex = canonicalVisibleOrder.indexOf("apps")
-        if (canonicalAppsIndex > 0) {
-            for (index in (canonicalAppsIndex - 1) downTo 0) {
-                val previous = canonicalVisibleOrder[index]
-                val next = canonicalVisibleOrder[index + 1]
-                canonicalTopBeforeAppsPx -=
-                    sectionHeightsPx.getValue(previous) + sectionGapPx(previous, next, compactLowerSections)
-            }
-        }
-
         if (visibleSectionOrder.isNotEmpty()) {
-            positions[visibleSectionOrder.first()] = canonicalTopBeforeAppsPx
+            positions[visibleSectionOrder.first()] = defaultRecommendationsTopPx
             for (index in 0 until visibleSectionOrder.lastIndex) {
                 val previous = visibleSectionOrder[index]
                 val next = visibleSectionOrder[index + 1]
                 positions[next] = positions.getValue(previous) +
-                        sectionHeightsPx.getValue(previous) + sectionGapPx(previous, next, compactLowerSections)
+                        sectionHeightsPx.getValue(previous) +
+                        sectionGapPx(previous, next, compactLowerSections)
             }
         }
         positions
     }
-
-    // Стабильная геометрия для расчёта положения рекомендаций.
-// Она не зависит от compactLowerSections и смены фокуса.
-    val recommendationsTopForShiftPx = remember(
-        visibleSectionOrder,
-        sectionHeightsPx,
-        appsAnchorTopPx,
-        density
-    ) {
-        val positions = mutableMapOf<String, Float>()
-
-        val appsIndex = visibleSectionOrder.indexOf("apps")
-        var topBeforeAppsPx = appsAnchorTopPx
-
-        if (appsIndex > 0) {
-            for (index in (appsIndex - 1) downTo 0) {
-                val previous = visibleSectionOrder[index]
-                val next = visibleSectionOrder[index + 1]
-
-                topBeforeAppsPx -=
-                    sectionHeightsPx.getValue(previous) +
-                            sectionGapPx(previous, next, compact = false)
-            }
-        }
-
-        if (visibleSectionOrder.isNotEmpty()) {
-            positions[visibleSectionOrder.first()] = topBeforeAppsPx
-
-            for (index in 0 until visibleSectionOrder.lastIndex) {
-                val previous = visibleSectionOrder[index]
-                val next = visibleSectionOrder[index + 1]
-
-                positions[next] =
-                    positions.getValue(previous) +
-                            sectionHeightsPx.getValue(previous) +
-                            sectionGapPx(previous, next, compact = false)
-            }
-        }
-
-        positions["recommendations"]
-            ?: (appsAnchorTopPx -
-                    sectionHeightsPx.getValue("recommendations") -
-                    with(density) { 16.dp.toPx() })
-    }
-    val favoritesRowTopPx = sectionTopPositionsPx["favorites"] ?: (
-            appsAnchorTopPx - with(density) { 85.dp.toPx() } - with(density) { 16.dp.toPx() }
-            )
-    val appsRowTopPx = sectionTopPositionsPx["apps"] ?: appsAnchorTopPx
+    val favoritesRowTopPx = sectionTopPositionsPx["favorites"] ?: defaultRecommendationsTopPx
+    val appsRowTopPx = sectionTopPositionsPx["apps"] ?: defaultRecommendationsTopPx
     val inputsRowTopPx = sectionTopPositionsPx["inputs"] ?: (
             appsRowTopPx + with(density) { appSectionHeight.toPx() } + with(density) { 24.dp.toPx() }
             )
     val gamesRowTopPx = sectionTopPositionsPx["games"] ?: (
             appsRowTopPx + with(density) { appSectionHeight.toPx() } + with(density) { 24.dp.toPx() }
             )
-    val recommendationsTopPx = sectionTopPositionsPx["recommendations"] ?: (
-            appsRowTopPx - recommendationsHeightPx.toFloat() - with(density) { 16.dp.toPx() }
-            )
-    val defaultRecommendationsTopPx = rootHeightPx.toFloat() - recommendationsHeightPx.toFloat() -
-            with(density) { 117.dp.toPx() }
-    // When the Favorites row first appears, the recommendations row must move
-    // to make room for it. Animate that reflow instead of jumping instantly;
-    // keep the top toolbar anchored at the top of the screen.
-    val recommendationsPositionShiftTargetPx =
-        recommendationsTopForShiftPx - defaultRecommendationsTopPx
-    val recommendationsPositionShiftAnim = remember { Animatable(0f) }
-    var recommendationsShiftInitialized by remember { mutableStateOf(false) }
-    LaunchedEffect(recommendationsPositionShiftTargetPx, moveModePackage) {
-        if (moveModePackage != null) {
-            // Do not let the recommendations layout reflow while an app is being moved.
-            recommendationsPositionShiftAnim.stop()
-            return@LaunchedEffect
-        }
-        if (!recommendationsShiftInitialized) {
-            recommendationsPositionShiftAnim.snapTo(recommendationsPositionShiftTargetPx)
-            recommendationsShiftInitialized = true
-        } else {
-            recommendationsPositionShiftAnim.animateTo(
-                targetValue = recommendationsPositionShiftTargetPx,
-                animationSpec = tween(
-                    durationMillis = 300,
-                    easing = FastOutSlowInEasing
-                )
-            )
-        }
-    }
-    val recommendationsPositionShiftY = with(density) {
-        recommendationsPositionShiftAnim.value.toDp()
-    }
+    val recommendationsTopPx = sectionTopPositionsPx["recommendations"] ?: defaultRecommendationsTopPx
     fun sectionNeighborRequester(
         currentSection: String,
         moveUp: Boolean,
@@ -2656,22 +2590,22 @@ fun MainScreen(
         val targetIndex = currentIndex + if (moveUp) -1 else 1
         val targetSection = visibleSectionOrder.getOrNull(targetIndex) ?: return null
         return when (targetSection) {
-            "favorites" -> findFocusableFavoriteRequester(preferredIndex)
+            "favorites" -> findFocusableFavoriteRequester(lastFocusedFavoriteIndex)
             "apps" -> {
                 if (appRows.isEmpty()) {
                     null
                 } else {
-                    val targetRow = if (moveUp) appRows.lastIndex else 0
+                    val targetRow = lastFocusedAppsRowOffset.coerceIn(0, appRows.lastIndex)
                     findFocusableAppRequester(
                         rowOffset = targetRow,
-                        preferredColumn = preferredIndex
+                        preferredColumn = lastFocusedAppsColumn
                     )
                 }
             }
             "inputs" -> if (inputFocusRequesters.isNotEmpty()) {
-                inputFocusRequesters[preferredIndex.coerceIn(0, inputFocusRequesters.lastIndex)]
+                inputFocusRequesters[lastFocusedInputIndex.coerceIn(0, inputFocusRequesters.lastIndex)]
             } else null
-            "games" -> findFocusableGameRequester(preferredIndex)
+            "games" -> findFocusableGameRequester(lastFocusedGameIndex)
             else -> null
         }
     }
@@ -2721,6 +2655,17 @@ fun MainScreen(
         showRecommendations && visualFocusedRowIndex == 0 -> "recommendations"
         else -> null
     }
+    // Для заголовков используем именно события реального фокуса, а не расчёт индексов строк.
+    val titleSectionId = when (activeRowTitle) {
+        "Избранное" -> "favorites"
+        "Приложения" -> "apps"
+        "Входы" -> "inputs"
+        "Игры" -> "games"
+        else -> null
+    }
+    // Заголовки нижних секций скрываем только пока реальный фокус находится
+    // на рекомендациях. В обычной навигации используем focusedRowIndex напрямую:
+    // visualFocusedRowIndex намеренно фиксируется во время перемещения карточек.
     val hideLowerSectionTitles =
         showRecommendations && visualFocusedRowIndex == 0
 
@@ -2882,7 +2827,13 @@ fun MainScreen(
                 }
 
                 if (sectionOrderChanged) {
-                    // Reposition sections without translating the entire screen.
+                    // A section reorder changes the geometry of every row. The previous
+                    // focus offset was calculated for the old geometry; keeping it makes
+                    // the entire launcher jump when a section is moved to the top.
+                    // Reset only this stale translation, then let normal focus navigation
+                    // calculate a fresh target on the next focus change.
+                    contentOffset.snapTo(0f)
+                    firstTarget = false
                     return@collectLatest
                 }
 
@@ -3334,14 +3285,10 @@ fun MainScreen(
             // РЕКОМЕНДАЦИИ И ЯКОРЬ ПРИЛОЖЕНИЙ
             Column(
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
+                    .align(Alignment.TopStart)
                     .offset {
-                        IntOffset(
-                            x = 0,
-                            y = recommendationsPositionShiftAnim.value.roundToInt()
-                        )
+                        IntOffset(x = 0, y = recommendationsTopPx.roundToInt())
                     }
-                    .padding(bottom = 16.dp)
                     .fillMaxWidth()
                     .wrapContentHeight(),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -3532,6 +3479,7 @@ fun MainScreen(
                                         onFocus = {
                                             focusedRowIndex = favoritesRowIndex
                                             focusedAppColumnIndex = favoriteIndex
+                                            lastFocusedFavoriteIndex = favoriteIndex
                                             activeRowTitle = "Избранное"
                                         },
                                         modifier = Modifier
@@ -3545,7 +3493,7 @@ fun MainScreen(
                                 }
                             }
                         }
-                        if (activeRowTitle == "Избранное" && !hideLowerSectionTitles) {
+                        if (titleSectionId == "favorites") {
                             Text(
                                 text = "Избранное",
                                 color = Color.White,
@@ -3594,7 +3542,7 @@ fun MainScreen(
                             .focusRestorer()
                             .fillMaxWidth()
                             .height(appSectionHeight),
-                        contentPadding = PaddingValues(horizontal = 48.dp),
+                        contentPadding = PaddingValues(horizontal = 55.dp),
                         horizontalArrangement = Arrangement.spacedBy(appCardHorizontalGap)
                     ) {
                         items(
@@ -3735,6 +3683,8 @@ fun MainScreen(
 
                                                         focusedRowIndex = targetRowIndex
                                                         focusedAppColumnIndex = slotIndex
+                                                        lastFocusedAppsRowOffset = rowOffset
+                                                        lastFocusedAppsColumn = slotIndex
                                                         activeRowTitle = "Приложения"
                                                     },
                                                     modifier = Modifier
@@ -3757,7 +3707,7 @@ fun MainScreen(
                         }
                     }
 
-                    if (activeRowTitle == "Приложения" && !hideLowerSectionTitles) {
+                    if (titleSectionId == "apps") {
                         Text(
                             text = "Приложения",
                             color = Color.White,
@@ -3851,20 +3801,23 @@ fun MainScreen(
                                     },
                                     onFocus = {
                                         focusedRowIndex = inputsRowIndex
+                                        lastFocusedInputIndex = inputIndex
                                         activeRowTitle = "Входы"
                                     },
                                     modifier = Modifier
                                         .focusRequester(inputFocusRequesters[inputIndex])
                                         .focusProperties {
                                             if (upRequester != null) up = upRequester
-                                            if (downRequester != null) down = downRequester
+                                            if (downRequester != null) {
+                                                down = downRequester
+                                            }
                                         }
                                         .size(width = 130.dp, height = 74.dp)
                                 )
                             }
                         }
 
-                        if (activeRowTitle == "Входы" && !hideLowerSectionTitles) {
+                        if (titleSectionId == "inputs") {
                             Text(
                                 text = "Входы",
                                 color = Color.White,
@@ -3949,27 +3902,15 @@ fun MainScreen(
                                                 moveModeOriginSection == "games",
                                         onFocus = {
                                             focusedRowIndex = gamesRowIndex
+                                            lastFocusedGameIndex = gameIndex
                                             activeRowTitle = "Игры"
                                         },
                                         modifier = Modifier
                                             .focusRequester(gameFocusRequesters[gameIndex])
                                             .focusProperties {
                                                 if (upRequester != null) up = upRequester
-                                                if (downRequester != null) down = downRequester
-                                            }
-                                            .onPreviewKeyEvent { event ->
-                                                val keyEvent = event.nativeKeyEvent
-
-                                                if (
-                                                    keyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP &&
-                                                    keyEvent.action == KeyEvent.ACTION_DOWN &&
-                                                    keyEvent.repeatCount == 0 &&
-                                                    upRequester != null
-                                                ) {
-                                                    upRequester.requestFocus()
-                                                    true
-                                                } else {
-                                                    false
+                                                if (downRequester != null) {
+                                                    down = downRequester
                                                 }
                                             }
                                             .size(width = 130.dp, height = 74.dp)
@@ -3977,7 +3918,7 @@ fun MainScreen(
                                 }
                             }
                         }
-                        if (activeRowTitle == "Игры" && !hideLowerSectionTitles) {
+                        if (titleSectionId == "games") {
                             Text(
                                 text = "Игры",
                                 color = Color.White,
