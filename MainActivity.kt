@@ -2657,10 +2657,17 @@ fun MainScreen(
         val targetSection = visibleSectionOrder.getOrNull(targetIndex) ?: return null
         return when (targetSection) {
             "favorites" -> findFocusableFavoriteRequester(preferredIndex)
-            "apps" -> findFocusableAppRequester(
-                rowOffset = if (moveUp) appRows.lastIndex else 0,
-                preferredColumn = preferredIndex
-            )
+            "apps" -> {
+                if (appRows.isEmpty()) {
+                    null
+                } else {
+                    val targetRow = if (moveUp) appRows.lastIndex else 0
+                    findFocusableAppRequester(
+                        rowOffset = targetRow,
+                        preferredColumn = preferredIndex
+                    )
+                }
+            }
             "inputs" -> if (inputFocusRequesters.isNotEmpty()) {
                 inputFocusRequesters[preferredIndex.coerceIn(0, inputFocusRequesters.lastIndex)]
             } else null
@@ -3949,6 +3956,21 @@ fun MainScreen(
                                             .focusProperties {
                                                 if (upRequester != null) up = upRequester
                                                 if (downRequester != null) down = downRequester
+                                            }
+                                            .onPreviewKeyEvent { event ->
+                                                val keyEvent = event.nativeKeyEvent
+
+                                                if (
+                                                    keyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP &&
+                                                    keyEvent.action == KeyEvent.ACTION_DOWN &&
+                                                    keyEvent.repeatCount == 0 &&
+                                                    upRequester != null
+                                                ) {
+                                                    upRequester.requestFocus()
+                                                    true
+                                                } else {
+                                                    false
+                                                }
                                             }
                                             .size(width = 130.dp, height = 74.dp)
                                     )
