@@ -2454,13 +2454,18 @@ fun MainScreen(
     val appsAnchorTopPx = rootHeightPx.toFloat() - with(density) {
         (16.dp + appsAnchorHeight).toPx()
     } + favoriteRowPushDownPx
-    val sectionHeightsPx = mapOf(
-        "recommendations" to recommendationsHeightPx.toFloat(),
-        "favorites" to with(density) { 85.dp.toPx() },
-        "apps" to with(density) { appSectionHeight.toPx() },
-        "inputs" to with(density) { 85.dp.toPx() },
-        "games" to with(density) { 85.dp.toPx() }
-    )
+    // Cache derived layout data so ordinary focus/recomposition updates do not
+    // recreate the section-height and section-position maps every time.
+    val sectionHeightsPx = remember(recommendationsHeightPx, appSectionHeight, density) {
+        mapOf(
+            "recommendations" to recommendationsHeightPx.toFloat(),
+            "favorites" to with(density) { 85.dp.toPx() },
+            "apps" to with(density) { appSectionHeight.toPx() },
+            "inputs" to with(density) { 85.dp.toPx() },
+            "games" to with(density) { 85.dp.toPx() }
+        )
+    }
+
     fun sectionGapPx(previous: String, next: String): Float = with(density) {
         when {
             previous == "recommendations" && next in setOf("favorites", "apps") -> 16.dp.toPx()
@@ -2471,24 +2476,37 @@ fun MainScreen(
         }
     }
 
-    // Apps is the layout anchor. Other section positions are calculated from the
-    // saved ordering and the measured height of the recommendation row.
-    val sectionTopPositionsPx = mutableMapOf<String, Float>()
-    val appsOrderIndex = visibleSectionOrder.indexOf("apps")
-    if (appsOrderIndex >= 0) {
-        sectionTopPositionsPx["apps"] = appsAnchorTopPx
-        for (index in (appsOrderIndex - 1) downTo 0) {
-            val previous = visibleSectionOrder[index]
-            val next = visibleSectionOrder[index + 1]
-            sectionTopPositionsPx[previous] = sectionTopPositionsPx.getValue(next) -
-                    sectionHeightsPx.getValue(previous) - sectionGapPx(previous, next)
-        }
-        for (index in appsOrderIndex until visibleSectionOrder.lastIndex) {
-            val previous = visibleSectionOrder[index]
-            val next = visibleSectionOrder[index + 1]
-            sectionTopPositionsPx[next] = sectionTopPositionsPx.getValue(previous) +
+    // Lay out sections in the saved order. Apps is not pinned to its old
+    // coordinate, so moving a section above it correctly moves Apps down.
+    val sectionTopPositionsPx = remember(
+        visibleSectionOrder, sectionHeightsPx, appsAnchorTopPx
+    ) {
+        val positions = mutableMapOf<String, Float>()
+        val canonicalVisibleOrder = listOf(
+            "recommendations", "favorites", "apps", "inputs", "games"
+        ).filter { it in visibleSectionOrder }
+
+        var canonicalTopBeforeAppsPx = appsAnchorTopPx
+        val canonicalAppsIndex = canonicalVisibleOrder.indexOf("apps")
+        if (canonicalAppsIndex > 0) {
+            for (index in (canonicalAppsIndex - 1) downTo 0) {
+                val previous = canonicalVisibleOrder[index]
+                val next = canonicalVisibleOrder[index + 1]
+                canonicalTopBeforeAppsPx -=
                     sectionHeightsPx.getValue(previous) + sectionGapPx(previous, next)
+            }
         }
+
+        if (visibleSectionOrder.isNotEmpty()) {
+            positions[visibleSectionOrder.first()] = canonicalTopBeforeAppsPx
+            for (index in 0 until visibleSectionOrder.lastIndex) {
+                val previous = visibleSectionOrder[index]
+                val next = visibleSectionOrder[index + 1]
+                positions[next] = positions.getValue(previous) +
+                        sectionHeightsPx.getValue(previous) + sectionGapPx(previous, next)
+            }
+        }
+        positions
     }
 
     val favoritesRowTopPx = sectionTopPositionsPx["favorites"] ?: (
@@ -2661,18 +2679,33 @@ fun MainScreen(
     // While a card is being rearranged, however, focus may cross app rows and update
     // contentTargetPx. Freeze the current whole-screen offset in move mode so only the
     // card arrangement changes; when move mode ends, normal positioning resumes.
+
+    // A settings reorder must not translate the whole launcher.
     val latestFocusTarget = rememberUpdatedState(
-        Triple(activeSectionKey, contentTargetPx, moveModePackage != null)
+        Triple(activeSectionKey, contentTargetPx, moveModePackage != null) to sectionOrder
     )
+
     LaunchedEffect(Unit) {
         var firstTarget = true
+        var previousSectionOrder: List<String>? = null
+
         snapshotFlow { latestFocusTarget.value }
-            .collectLatest { (_, targetPx, isRearranging) ->
+            .collectLatest { (focusTarget, currentSectionOrder) ->
+                val (_, targetPx, isRearranging) = focusTarget
+
+                val sectionOrderChanged =
+                    previousSectionOrder != null &&
+                            previousSectionOrder != currentSectionOrder
+
+                previousSectionOrder = currentSectionOrder
+
                 if (isRearranging) {
-                    // collectLatest cancels any in-flight transition before this runs.
-                    // stop() leaves the current offset in place instead of following the
-                    // temporary focusedRowIndex changes caused by rearranging the card.
                     contentOffset.stop()
+                    return@collectLatest
+                }
+
+                if (sectionOrderChanged) {
+                    // Reposition sections without translating the entire screen.
                     return@collectLatest
                 }
 
@@ -2690,6 +2723,7 @@ fun MainScreen(
                 }
             }
     }
+
     // Hard-lock the rendered translation during move mode. Stopping Animatable alone is not
     // enough if focus changes produce new targets while cards are being reordered.
     val contentOffsetY = if (moveModePackage != null) {
