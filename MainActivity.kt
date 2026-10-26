@@ -2466,25 +2466,45 @@ fun MainScreen(
         )
     }
 
+    // Уплотняем нижние секции только при фокусе на рекомендациях.
+    val compactLowerSections =
+        showRecommendations && visualFocusedRowIndex == 0
+
     fun sectionGapPx(
         previous: String,
         next: String,
-        activeSection: String?
+        compact: Boolean
     ): Float = with(density) {
         when {
-            activeSection == "recommendations" -> when {
-                previous == "favorites" && next == "apps" -> 8.dp.toPx()
-                previous == "apps" && next == "inputs" -> 8.dp.toPx()
-                previous == "inputs" && next == "games" -> 8.dp.toPx()
+            compact -> when {
+                previous == "favorites" && next == "apps" ->
+                    8.dp.toPx()
+
+                previous == "apps" && next == "inputs" ->
+                    8.dp.toPx()
+
+                previous == "inputs" && next == "games" ->
+                    8.dp.toPx()
+
                 else -> 15.dp.toPx()
             }
 
             previous == "recommendations" &&
-                    next in setOf("favorites", "apps") -> 16.dp.toPx()
+                    next in setOf("favorites", "apps") ->
+                16.dp.toPx()
 
-            previous == "favorites" && next == "apps" -> 16.dp.toPx()
-            previous == "apps" && next == "inputs" -> 24.dp.toPx()
-            previous == "inputs" && next == "games" -> (-3).dp.toPx()
+            previous == "favorites" && next == "apps" ->
+                16.dp.toPx()
+
+            previous == "apps" && next == "inputs" ->
+                24.dp.toPx()
+
+            previous == "inputs" && next == "games" ->
+                (-3).dp.toPx()
+
+            previous == "games" && next == "apps" ->
+                8.dp.toPx()
+
             else -> 24.dp.toPx()
         }
     }
@@ -2492,12 +2512,13 @@ fun MainScreen(
     // Lay out sections in the saved order. Apps is not pinned to its old
     // coordinate, so moving a section above it correctly moves Apps down.
     val sectionTopPositionsPx = remember(
-        visibleSectionOrder, sectionHeightsPx, appsAnchorTopPx
+        visibleSectionOrder,
+        sectionHeightsPx,
+        appsAnchorTopPx,
+        compactLowerSections
     ) {
         val positions = mutableMapOf<String, Float>()
-        val canonicalVisibleOrder = listOf(
-            "recommendations", "favorites", "apps", "inputs", "games"
-        ).filter { it in visibleSectionOrder }
+        val canonicalVisibleOrder = visibleSectionOrder
 
         var canonicalTopBeforeAppsPx = appsAnchorTopPx
         val canonicalAppsIndex = canonicalVisibleOrder.indexOf("apps")
@@ -2506,7 +2527,7 @@ fun MainScreen(
                 val previous = canonicalVisibleOrder[index]
                 val next = canonicalVisibleOrder[index + 1]
                 canonicalTopBeforeAppsPx -=
-                    sectionHeightsPx.getValue(previous) + sectionGapPx(previous, next)
+                    sectionHeightsPx.getValue(previous) + sectionGapPx(previous, next, compactLowerSections)
             }
         }
 
@@ -2516,7 +2537,7 @@ fun MainScreen(
                 val previous = visibleSectionOrder[index]
                 val next = visibleSectionOrder[index + 1]
                 positions[next] = positions.getValue(previous) +
-                        sectionHeightsPx.getValue(previous) + sectionGapPx(previous, next)
+                        sectionHeightsPx.getValue(previous) + sectionGapPx(previous, next, compactLowerSections)
             }
         }
         positions
@@ -3322,7 +3343,7 @@ fun MainScreen(
                                 .height(85.dp)
                                 .horizontalScroll(favoritesHorizontalScrollState)
                                 .padding(horizontal = 48.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             favoriteRowApps.forEachIndexed { favoriteIndex, favoriteApp ->
                                 key(favoriteApp.packageName) {
@@ -3608,7 +3629,7 @@ fun MainScreen(
                     ) {
                         LazyRow(
                             state = inputsListState,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             contentPadding = PaddingValues(horizontal = 48.dp),
                             modifier = Modifier
                                 .focusRestorer()
@@ -3710,7 +3731,7 @@ fun MainScreen(
                     ) {
                         LazyRow(
                             state = gamesListState,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             contentPadding = PaddingValues(horizontal = 48.dp),
                             modifier = Modifier
                                 .focusRestorer()
