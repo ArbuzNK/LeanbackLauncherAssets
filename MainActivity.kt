@@ -62,7 +62,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -106,6 +105,7 @@ import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.draw.drawWithContent
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -496,7 +496,7 @@ class MainActivity : ComponentActivity() {
                 mutableStateOf(sharedPrefs.getBoolean("show_recommendations", true))
             }
             var maxAppsPerRow by remember {
-                mutableIntStateOf(sharedPrefs.getInt("max_apps_per_row", 10).coerceIn(4, 20))
+                mutableIntStateOf(sharedPrefs.getInt("max_apps_per_row", 10).coerceIn(4, 50))
             }
             var inputSwitchSoundEnabled by remember {
                 mutableStateOf(sharedPrefs.getBoolean("input_switch_sound_enabled", false))
@@ -983,7 +983,7 @@ class MainActivity : ComponentActivity() {
                             },
                             maxAppsPerRow = maxAppsPerRow,
                             onMaxAppsPerRowChange = { newValue ->
-                                val boundedValue = newValue.coerceIn(4, 20)
+                                val boundedValue = newValue.coerceIn(4, 50)
                                 maxAppsPerRow = boundedValue
                                 sharedPrefs.edit().putInt("max_apps_per_row", boundedValue).apply()
                             },
@@ -2233,7 +2233,7 @@ fun MainScreen(
     var fastScrollResetJob by remember { mutableStateOf<Job?>(null) }
     val inputScope = rememberCoroutineScope()
 
-    val normalizedMaxAppsPerRow = maxAppsPerRow.coerceIn(4, 20)
+    val normalizedMaxAppsPerRow = maxAppsPerRow.coerceIn(4, 50)
     val appRows = remember(apps, normalizedMaxAppsPerRow) {
         val chunks = apps.chunked(normalizedMaxAppsPerRow)
         if (chunks.isEmpty()) listOf(emptyList<TvAppInfo>()) else chunks
@@ -2408,8 +2408,8 @@ fun MainScreen(
 
     val density = LocalDensity.current
 
-    val appCardHorizontalGap = 10.dp
-    val appCardVerticalGap = 8.dp
+    val appCardHorizontalGap = 6.dp
+    val appCardVerticalGap = 4.dp
     val appCardWidth = 130.dp
     val appCardHeight = 74.dp
 
@@ -2466,9 +2466,22 @@ fun MainScreen(
         )
     }
 
-    fun sectionGapPx(previous: String, next: String): Float = with(density) {
+    fun sectionGapPx(
+        previous: String,
+        next: String,
+        activeSection: String?
+    ): Float = with(density) {
         when {
-            previous == "recommendations" && next in setOf("favorites", "apps") -> 16.dp.toPx()
+            activeSection == "recommendations" -> when {
+                previous == "favorites" && next == "apps" -> 8.dp.toPx()
+                previous == "apps" && next == "inputs" -> 8.dp.toPx()
+                previous == "inputs" && next == "games" -> 8.dp.toPx()
+                else -> 15.dp.toPx()
+            }
+
+            previous == "recommendations" &&
+                    next in setOf("favorites", "apps") -> 16.dp.toPx()
+
             previous == "favorites" && next == "apps" -> 16.dp.toPx()
             previous == "apps" && next == "inputs" -> 24.dp.toPx()
             previous == "inputs" && next == "games" -> (-3).dp.toPx()
@@ -2622,6 +2635,8 @@ fun MainScreen(
         showRecommendations && visualFocusedRowIndex == 0 -> "recommendations"
         else -> null
     }
+    val hideLowerSectionTitles =
+        showRecommendations && visualFocusedRowIndex == 0
 
     // Keep inactive sections separated from the active one using the configured order.
     val sectionGap = 24.dp
@@ -2630,6 +2645,10 @@ fun MainScreen(
         // Otherwise focus callbacks during reordering can animate neighbouring rows.
         val activeKey = (if (moveModePackage != null) moveModeOriginSection else activeSectionId)
             ?: return 0.dp
+
+// При фокусе на рекомендациях нижние секции образуют единую сетку.
+        if (activeKey == "recommendations") return 0.dp
+
         val activeIndex = visibleSectionOrder.indexOf(activeKey)
         val targetIndex = visibleSectionOrder.indexOf(sectionKey)
         if (activeIndex < 0 || targetIndex < 0 || activeIndex == targetIndex) return 0.dp
@@ -2637,6 +2656,7 @@ fun MainScreen(
         val amount = sectionGap * distance.toFloat()
         return if (targetIndex < activeIndex) -amount else amount
     }
+
 
     val recommendationsSeparationY by animateDpAsState(
         targetValue = if (moveModePackage != null) {
@@ -3343,7 +3363,7 @@ fun MainScreen(
                                 }
                             }
                         }
-                        if (activeRowTitle == "Избранное") {
+                        if (activeRowTitle == "Избранное" && !hideLowerSectionTitles) {
                             Text(
                                 text = "Избранное",
                                 color = Color.White,
@@ -3542,7 +3562,7 @@ fun MainScreen(
                         }
                     }
 
-                    if (activeRowTitle == "Приложения") {
+                    if (activeRowTitle == "Приложения" && !hideLowerSectionTitles) {
                         Text(
                             text = "Приложения",
                             color = Color.White,
@@ -3643,7 +3663,7 @@ fun MainScreen(
                             }
                         }
 
-                        if (activeRowTitle == "Входы") {
+                        if (activeRowTitle == "Входы" && !hideLowerSectionTitles) {
                             Text(
                                 text = "Входы",
                                 color = Color.White,
@@ -3735,7 +3755,7 @@ fun MainScreen(
                                 }
                             }
                         }
-                        if (activeRowTitle == "Игры") {
+                        if (activeRowTitle == "Игры" && !hideLowerSectionTitles) {
                             Text(
                                 text = "Игры",
                                 color = Color.White,
@@ -3765,7 +3785,7 @@ fun MainScreen(
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 24.dp)
                     .zIndex(1000f)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(6.dp))
                     .background(Color(0xE6222222))
                     .padding(horizontal = 20.dp, vertical = 12.dp)
             ) {
@@ -4149,8 +4169,8 @@ fun SettingsScreen(
                                 modifier = Modifier.width(28.dp)
                             )
                             Surface(
-                                onClick = { onMaxAppsPerRowChange((maxAppsPerRow + 1).coerceAtMost(20)) },
-                                enabled = maxAppsPerRow < 20,
+                                onClick = { onMaxAppsPerRowChange((maxAppsPerRow + 1).coerceAtMost(50)) },
+                                enabled = maxAppsPerRow < 50, // Теперь кнопка активна вплоть до 50 элементов
                                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                                 colors = ClickableSurfaceDefaults.colors(
                                     containerColor = Color(0x11FFFFFF),
