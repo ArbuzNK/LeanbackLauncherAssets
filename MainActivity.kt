@@ -119,6 +119,19 @@ data class LiveChannelInfo(
     val displayName: String?,
     val programs: List<LiveProgramInfo>
 )
+@Immutable
+data class ProviderChannelLogo(
+    val id: Long,
+    val logoUri: Uri,
+    val intentUri: Uri?
+)
+
+@Immutable
+data class ChannelProviderGroup(
+    val packageName: String,
+    val title: String,
+    val channels: List<ProviderChannelLogo>
+)
 
 @Immutable
 data class LiveProgramInfo(
@@ -520,6 +533,15 @@ class MainActivity : ComponentActivity() {
                         ?.toSet().orEmpty()
                 )
             }
+            var providerChannelGroups by remember {
+                mutableStateOf<List<ChannelProviderGroup>>(emptyList())
+            }
+            var selectedChannelProviders by remember {
+                mutableStateOf(
+                    sharedPrefs.getStringSet("selected_channel_providers", emptySet())
+                        ?.toSet().orEmpty()
+                )
+            }
             var favoriteCustomOrder by remember {
                 mutableStateOf(
                     sharedPrefs.getString("favorite_custom_order", null)
@@ -626,6 +648,7 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(Unit) {
                 withContext(Dispatchers.IO) {
+                    providerChannelGroups = loadProviderChannelGroups(context)
                     val apps = getInstalledTvApps()
                     val games = getGamePackageNames(apps)
                     val inputs = getTvInputs(context)
@@ -848,6 +871,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val visibleProviderGroups by remember {
+                derivedStateOf {
+                    providerChannelGroups.filter {
+                        it.packageName in selectedChannelProviders
+                    }
+                }
+            }
             Box(modifier = Modifier.fillMaxSize()) {
                 MainScreen(
                     channels = liveChannels,
@@ -1081,6 +1111,21 @@ class MainActivity : ComponentActivity() {
 
                                 sharedPrefs.edit()
                                     .putStringSet("hidden_packages", hiddenApps.toSet())
+                                    .apply()
+                            },
+                            channelProviders = providerChannelGroups,
+                            selectedChannelProviders = selectedChannelProviders,
+                            onToggleChannelProvider = { packageName ->
+                                val updated = selectedChannelProviders.toMutableSet()
+
+                                if (!updated.add(packageName)) {
+                                    updated.remove(packageName)
+                                }
+
+                                selectedChannelProviders = updated
+
+                                sharedPrefs.edit()
+                                    .putStringSet("selected_channel_providers", updated)
                                     .apply()
                             },
                             hasCustomWallpaper = currentBgUri != null,
@@ -1603,6 +1648,183 @@ class MainActivity : ComponentActivity() {
         }
 
         return programsList
+    }
+}
+@SuppressLint("Range")
+suspend fun loadProviderChannelGroups(
+    context: Context
+): List<ChannelProviderGroup> = withContext(Dispatchers.IO) {
+    val resolver = context.contentResolver
+    val groups = LinkedHashMap<String, MutableList<ProviderChannelLogo>>()
+    val titles = HashMap<String, String>()
+
+    val projection = arrayOf(
+        TvContract.Channels._ID,
+        TvContract.Channels.COLUMN_PACKAGE_NAME,
+        TvContract.Channels.COLUMN_DISPLAY_NAME
+    )
+
+    try {
+        resolver.query(
+            TvContract.Channels.CONTENT_URI,
+            projection,
+            null,
+            null,
+            "${TvContract.Channels.COLUMN_DISPLAY_NAME} COLLATE NOCASE ASC"
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndex(TvContract.Channels._ID)
+            val packageIndex =
+                cursor.getColumnIndex(TvContract.Channels.COLUMN_PACKAGE_NAME)
+            val nameIndex =
+                cursor.getColumnIndex(TvContract.Channels.COLUMN_DISPLAY_NAME)
+
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(idIndex)
+                val packageName = cursor.getString(packageIndex)
+                    ?: continue
+
+                val channelName = cursor.getString(nameIndex).orEmpty()
+
+                val logoUri = runCatching {
+                    TvContract.buildChannelLogoUri(id)
+                }.getOrNull() ?: continue
+
+                groups.getOrPut(packageName) { mutableListOf() }
+                titles.getOrPut(packageName) {
+                    val appLabel = runCatching {
+                        val app = if (Build.VERSION.SDK_INT >= 33) {
+                            context.packageManager.getApplicationInfo(
+                                packageName,
+                                PackageManager.ApplicationInfoFlags.of(0)
+                            )
+                        } else {
+                            @Suppress("DEPRECATION")
+                            context.packageManager.getApplicationInfo(
+                                packageName, 0
+                            )
+                        }
+                        context.packageManager.getApplicationLabel(app).toString()
+                    }.getOrDefault(packageName)
+
+                    "$appLabel TV"
+                }
+
+                val intentUri = runCatching {
+                    TvContract.buildChannelUri(id)
+                }.getOrNull()
+
+                groups.getValue(packageName).add(
+                    ProviderChannelLogo(
+                        id = id,
+                        logoUri = logoUri,
+                        intentUri = intentUri
+                    )
+                )
+            }
+        }
+    } catch (e: SecurityException) {
+        Log.w("ProviderChannels", "Нет доступа к списку TV-каналов", e)
+    } catch (e: Exception) {
+        Log.e("ProviderChannels", "Ошибка загрузки TV-каналов", e)
+    }
+
+    groups.mapNotNull { (packageName, channels) ->
+        if (channels.isEmpty()) null
+        else ChannelProviderGroup(
+            packageName = packageName,
+            title = titles[packageName] ?: packageName,
+            channels = channels.toList()
+        )
+    }
+}
+@Composable
+fun ProviderLogoRow(
+    group: ChannelProviderGroup,
+    onChannelClick: (Uri?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+
+    Column(
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = group.title,
+            color = Color.White,
+            fontSize = 19.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(
+                start = 48.dp,
+                bottom = 10.dp
+            )
+        )
+
+        LazyRow(
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            items(
+                items = group.channels,
+                key = { it.id }
+            ) { channel ->
+                var focused by remember {
+                    mutableStateOf(false)
+                }
+
+                Surface(
+                    onClick = {
+                        onChannelClick(channel.intentUri)
+                    },
+                    modifier = Modifier
+                        .size(width = 180.dp, height = 100.dp)
+                        .onFocusChanged {
+                            focused = it.isFocused
+                        }
+                        .graphicsLayer {
+                            scaleX = if (focused) 1.06f else 1f
+                            scaleY = if (focused) 1.06f else 1f
+                        },
+                    shape = ClickableSurfaceDefaults.shape(
+                        shape = RoundedCornerShape(12.dp)
+                    ),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = Color(0xFF202020),
+                        focusedContainerColor = Color(0xFF303030)
+                    ),
+                    border = ClickableSurfaceDefaults.border(
+                        focusedBorder = androidx.tv.material3.Border(
+                            border = androidx.compose.foundation.BorderStroke(
+                                2.dp,
+                                Color.White
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    )
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(
+                                androidx.compose.ui.platform.LocalContext.current
+                            )
+                                .data(channel.logoUri)
+                                .crossfade(false)
+                                .memoryCachePolicy(CachePolicy.ENABLED)
+                                .diskCachePolicy(CachePolicy.ENABLED)
+                                .build(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth(0.82f)
+                                .fillMaxHeight(0.78f)
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2234,7 +2456,8 @@ fun MainScreen(
     favoritePackages: Set<String> = emptySet(),
     favoriteCustomOrder: List<String> = emptyList(),
     onToggleFavorite: (String) -> Unit = {},
-    onMoveApp: (packageName: String, direction: Int, isGame: Boolean, originSection: String) -> Unit = { _, _, _, _ -> }
+    onMoveApp: (packageName: String, direction: Int, isGame: Boolean, originSection: String) -> Unit = { _, _, _, _ -> },
+    providerGroups = visibleProviderGroups,
 ) {
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
@@ -2281,6 +2504,12 @@ fun MainScreen(
     val appsSectionListState = rememberLazyListState()
     val inputsListState = rememberLazyListState()
     val gamesListState = rememberLazyListState()
+    val providerListStates = remember {
+        mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>()
+    }
+
+    val providerRowHeight = 130.dp
+    val providerRowGap = 18.dp
 
     var isFastScrolling by remember { mutableStateOf(false) }
     var leftRightPressStartTime by remember { mutableLongStateOf(0L) }
@@ -2579,6 +2808,24 @@ fun MainScreen(
     val gamesRowTopPx = sectionTopPositionsPx["games"] ?: (
             appsRowTopPx + with(density) { appSectionHeight.toPx() } + with(density) { 24.dp.toPx() }
             )
+    val providerRowsStartPx = gamesRowTopPx +
+            with(density) { 85.dp.toPx() } +
+            with(density) { 24.dp.toPx() }
+
+    val providerRowPositions = remember(
+        providerGroups,
+        providerRowsStartPx,
+        density
+    ) {
+        providerGroups.mapIndexed { index, group ->
+            group.packageName to (
+                    providerRowsStartPx +
+                            with(density) {
+                                (providerRowHeight + providerRowGap).toPx() * index
+                            }
+                    )
+        }.toMap()
+    }
     val recommendationsTopPx = sectionTopPositionsPx["recommendations"] ?: defaultRecommendationsTopPx
     fun sectionNeighborRequester(
         currentSection: String,
@@ -3057,6 +3304,27 @@ fun MainScreen(
                 if (nativeEvent.action == KeyEvent.ACTION_UP && keyCode == moveModeConsumedKeyUp) {
                     moveModeConsumedKeyUp = KeyEvent.KEYCODE_UNKNOWN
                     return@onPreviewKeyEvent true
+                }
+                providerGroups.forEach { group ->
+                    val rowTop = providerRowPositions[group.packageName]
+                        ?: return@forEach
+
+                    key(group.packageName) {
+                        ProviderLogoRow(
+                            group = group,
+                            onChannelClick = onProgramClick,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .offset {
+                                    IntOffset(
+                                        x = 0,
+                                        y = rowTop.roundToInt()
+                                    )
+                                }
+                                .fillMaxWidth()
+                                .height(providerRowHeight)
+                        )
+                    }
                 }
 
                 val isMoveModeKey = when (keyCode) {
@@ -4185,6 +4453,9 @@ fun SettingsScreen(
     hasCustomWallpaper: Boolean,
     onSelectWallpaper: () -> Unit,
     onResetWallpaper: () -> Unit,
+    channelProviders: List<ChannelProviderGroup>,
+    selectedChannelProviders: Set<String>,
+    onToggleChannelProvider: (String) -> Unit,
     onBack: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
@@ -4634,6 +4905,76 @@ fun SettingsScreen(
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Каналы приложений",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    Text(
+                        text = "Выбери приложения, каналы которых показывать на главном экране.",
+                        color = Color(0xFFAAAAAA),
+                        fontSize = 12.sp
+                    )
+
+                    if (channelProviders.isEmpty()) {
+                        Text(
+                            text = "Каналы пока не найдены",
+                            color = Color(0xFFAAAAAA),
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    channelProviders.forEach { provider ->
+                        Surface(
+                            onClick = {
+                                onToggleChannelProvider(provider.packageName)
+                            },
+                            shape = ClickableSurfaceDefaults.shape(
+                                shape = RoundedCornerShape(8.dp)
+                            ),
+                            colors = ClickableSurfaceDefaults.colors(
+                                containerColor = Color(0x11FFFFFF),
+                                focusedContainerColor = Color(0x33FFFFFF)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = provider.title,
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                Text(
+                                    text = if (
+                                        provider.packageName in selectedChannelProviders
+                                    ) "✓" else "○",
+                                    color = Color.White,
+                                    fontSize = 20.sp
+                                )
                             }
                         }
                     }
