@@ -2640,8 +2640,7 @@ fun MainScreen(
             focusLineYpx - inputsRowTopPx - appCardHalfHeightPx
         focusedRowIndex == gamesRowIndex ->
             focusLineYpx - gamesRowTopPx - gamesCardHalfHeightPx
-        showRecommendations && focusedRowIndex == 0 && visibleSectionOrder.firstOrNull() != "recommendations" ->
-            focusLineYpx - recommendationsTopPx - recommendationsHeightPx / 2f
+        showRecommendations && focusedRowIndex == 0 -> 0f
         else -> 0f
     }
     val activeSectionKey = when {
@@ -2710,7 +2709,29 @@ fun MainScreen(
         ),
         label = "FavoritesSeparation"
     )
+    val appsSeparationY by animateDpAsState(
+        targetValue = if (moveModePackage != null) {
+            moveModeLockedSectionOffsets?.get("apps") ?: targetSectionSeparation("apps")
+        } else targetSectionSeparation("apps"),
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "AppsSeparation"
+    )
+    val inputsSeparationY by animateDpAsState(
+        targetValue = if (moveModePackage != null) {
+            moveModeLockedSectionOffsets?.get("inputs") ?: targetSectionSeparation("inputs")
+        } else targetSectionSeparation("inputs"),
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "InputsSeparation"
+    )
+    val gamesSeparationY by animateDpAsState(
+        targetValue = if (moveModePackage != null) {
+            moveModeLockedSectionOffsets?.get("games") ?: targetSectionSeparation("games")
+        } else targetSectionSeparation("games"),
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "GamesSeparation"
+    )
 
+    val contentOffset = remember { Animatable(0f) }
     val appsSeparationState = animateDpAsState(
         targetValue = if (moveModePackage != null) {
             moveModeLockedSectionOffsets?.get("apps")
@@ -2752,29 +2773,6 @@ fun MainScreen(
         ),
         label = "GamesSeparation"
     )
-    val appsSeparationY by animateDpAsState(
-        targetValue = if (moveModePackage != null) {
-            moveModeLockedSectionOffsets?.get("apps") ?: targetSectionSeparation("apps")
-        } else targetSectionSeparation("apps"),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-        label = "AppsSeparation"
-    )
-    val inputsSeparationY by animateDpAsState(
-        targetValue = if (moveModePackage != null) {
-            moveModeLockedSectionOffsets?.get("inputs") ?: targetSectionSeparation("inputs")
-        } else targetSectionSeparation("inputs"),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-        label = "InputsSeparation"
-    )
-    val gamesSeparationY by animateDpAsState(
-        targetValue = if (moveModePackage != null) {
-            moveModeLockedSectionOffsets?.get("games") ?: targetSectionSeparation("games")
-        } else targetSectionSeparation("games"),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-        label = "GamesSeparation"
-    )
-
-    val contentOffset = remember { Animatable(0f) }
     // Keep the existing screen-position animation unchanged during normal navigation.
     // While a card is being rearranged, however, focus may cross app rows and update
     // contentTargetPx. Freeze the current whole-screen offset in move mode so only the
@@ -3494,7 +3492,13 @@ fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(appSectionHeight)
-                        .offset(y = with(density) { appsRowTopPx.toDp() } + appsSeparationY)
+                        .offset {
+                            IntOffset(
+                                x = 0,
+                                y = appsRowTopPx.roundToInt() +
+                                        appsSeparationState.value.roundToPx()
+                            )
+                        }
                         .graphicsLayer {
                             alpha = appsRowAlpha
                             scaleX = appsRowScale
@@ -3690,7 +3694,13 @@ fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(85.dp)
-                        .offset(y = with(density) { inputsRowTopPx.toDp() } + inputsSeparationY)
+                        .offset {
+                            IntOffset(
+                                x = 0,
+                                y = inputsRowTopPx.roundToInt() +
+                                        inputsSeparationState.value.roundToPx()
+                            )
+                        }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
                                 focusedRowIndex = inputsRowIndex
@@ -3792,7 +3802,13 @@ fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(85.dp)
-                        .offset(y = with(density) { gamesRowTopPx.toDp() } + gamesSeparationY)
+                        .offset {
+                            IntOffset(
+                                x = 0,
+                                y = gamesRowTopPx.roundToInt() +
+                                        gamesSeparationState.value.roundToPx()
+                            )
+                        }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
                                 focusedRowIndex = gamesRowIndex
@@ -3995,7 +4011,7 @@ fun MainScreen(
                                 // focus follows the reordered card. Existing animations resume on exit.
                                 moveModeLockedContentOffsetPx = contentOffset.value
                                 moveModeStartFocusedRowIndex = focusedRowIndex
-                                moveModeLockedSectionOffsets = mapOf(
+                                moveModeLockedSectionOffsets = mapOf<String, Dp>(
                                     "recommendations" to recommendationsSeparationState.value,
                                     "favorites" to favoritesSeparationState.value,
                                     "apps" to appsSeparationState.value,
