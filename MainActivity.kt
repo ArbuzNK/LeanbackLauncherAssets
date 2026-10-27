@@ -307,8 +307,6 @@ fun AppCard(
                 scaleX = if (isMoveMode) maxOf(scaleAnimated, 1.18f) else scaleAnimated
                 scaleY = if (isMoveMode) maxOf(scaleAnimated, 1.18f) else scaleAnimated
             }
-            .clip(cardShape)
-            .background(backgroundColor, cardShape)
             .then(
                 if (isFocused && !isFastScrolling) {
                     Modifier.shadow(
@@ -316,10 +314,10 @@ fun AppCard(
                         cardShape,
                         clip = false
                     )
-                } else {
-                    Modifier
-                }
+                } else Modifier
             )
+            .clip(cardShape)
+            .background(backgroundColor, cardShape)
             .then(
                 if (isMoveMode) Modifier.border(2.dp, Color(0xFF80CBC4), cardShape) else Modifier
             )
@@ -401,7 +399,7 @@ fun InputCard(
             ?.takeIf { it.isNotEmpty() && input.label.startsWith("HDMI", ignoreCase = true) }
         if (deviceName != null) "${input.label}/$deviceName" else input.label
     }
-    val cardShape = RoundedCornerShape(2.dp)
+    val cardShape = RoundedCornerShape(0.dp)
 
     Box(
         modifier = modifier
@@ -419,7 +417,7 @@ fun InputCard(
             }
             .then(
                 if (isFocused) {
-                    Modifier.shadow(11.dp, RoundedCornerShape(0.dp), clip = false)
+                    Modifier.shadow(11.dp, cardShape, clip = false)
                 } else {
                     Modifier
                 }
@@ -2772,23 +2770,18 @@ fun MainScreen(
     ): Float = with(density) {
         when {
             // Каналы располагаются между «Входами» и «Играми».
+            // Каналы располагаются между «Входами» и «Играми».
             previous == "inputs" &&
                     next == "games" &&
-                    providerGroups.isNotEmpty() ->
-                48.dp.toPx() +
-                        (providerRowHeight + providerRowGap).toPx() *
-                        providerGroups.size
-            compact -> when {
-                previous == "favorites" && next == "apps" ->
-                    8.dp.toPx()
-
-                previous == "apps" && next == "inputs" ->
-                    8.dp.toPx()
-
-                previous == "inputs" && next == "games" ->
-                    8.dp.toPx()
-
-                else -> 15.dp.toPx()
+                    providerGroups.isNotEmpty() -> {
+                val channelStep = (providerRowHeight + providerRowGap).toPx()
+                if (compact) {
+                    (24.dp + 8.dp).toPx() +
+                            providerRowHeight.toPx() +
+                            channelStep * (providerGroups.size - 1).coerceAtLeast(0)
+                } else {
+                    48.dp.toPx() + channelStep * providerGroups.size
+                }
             }
 
             previous == "recommendations" &&
