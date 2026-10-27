@@ -279,6 +279,7 @@ fun AppCard(
     // TV remotes send DPAD_CENTER/ENTER key events rather than pointer long-clicks.
     // Handle the held key explicitly so long-press opens the card menu on Android TV.
     var dpadSelectDownTime by remember { mutableLongStateOf(-1L) }
+    val cardShape = RoundedCornerShape(0.dp)
 
 
     val scaleAnimated by animateFloatAsState(
@@ -297,7 +298,6 @@ fun AppCard(
 
     Box(
         modifier = modifier
-            .background(backgroundColor, RectangleShape)
             .zIndex(if (isFocused) 10f else 1f)
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
@@ -307,11 +307,13 @@ fun AppCard(
                 scaleX = if (isMoveMode) maxOf(scaleAnimated, 1.18f) else scaleAnimated
                 scaleY = if (isMoveMode) maxOf(scaleAnimated, 1.18f) else scaleAnimated
             }
+            .clip(cardShape)
+            .background(backgroundColor, cardShape)
             .then(
                 if (isFocused && !isFastScrolling) {
                     Modifier.shadow(
                         if (isMoveMode) 16.dp else 11.dp,
-                        RoundedCornerShape(0.dp),
+                        cardShape,
                         clip = false
                     )
                 } else {
@@ -319,7 +321,7 @@ fun AppCard(
                 }
             )
             .then(
-                if (isMoveMode) Modifier.border(2.dp, Color(0xFF80CBC4), RectangleShape) else Modifier
+                if (isMoveMode) Modifier.border(2.dp, Color(0xFF80CBC4), cardShape) else Modifier
             )
             .onPreviewKeyEvent { composeKeyEvent ->
                 val keyEvent = composeKeyEvent.nativeKeyEvent
@@ -399,6 +401,7 @@ fun InputCard(
             ?.takeIf { it.isNotEmpty() && input.label.startsWith("HDMI", ignoreCase = true) }
         if (deviceName != null) "${input.label}/$deviceName" else input.label
     }
+    val cardShape = RoundedCornerShape(2.dp)
 
     Box(
         modifier = modifier
@@ -426,7 +429,8 @@ fun InputCard(
                 interactionSource = remember { MutableInteractionSource() },
                 onClick = onClick
             )
-            .background(Color.White, RectangleShape),
+            .clip(cardShape)
+            .background(Color.White, cardShape),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -1873,6 +1877,7 @@ fun LeanbackCard(
         label = "ProgramPanelColor"
     )
     val fastScrollingNow by rememberUpdatedState(isFastScrolling)
+    val cardShape = RoundedCornerShape(0.dp)
 
     // Во время быстрого перемещения не меняем ширину уже видимых карточек:
     // декодирование изображения может завершиться в этот момент и вызвать relayout LazyRow.
@@ -2000,7 +2005,11 @@ fun LeanbackCard(
                 interactionSource = remember { MutableInteractionSource() }
             ) { onProgramClick(program.intentUri) }
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(cardShape)
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
