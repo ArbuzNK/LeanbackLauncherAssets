@@ -377,8 +377,6 @@ fun AppCard(
 
 // === КАРТОЧКА ВХОДА (HDMI / AV) ===
 
-// === КАРТОЧКА ВХОДА (HDMI / AV) ===
-
 @Composable
 fun InputCard(
     input: TvInputItem,
@@ -2516,6 +2514,41 @@ private fun LauncherClock() {
         fontWeight = FontWeight.Light
     )
 }
+@Composable
+private fun LauncherBackground(
+    backgroundUri: String?,
+    offsetY: Float
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        AsyncImage(
+            model = backgroundUri ?: R.drawable.bg_default,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    translationY = offsetY
+                }
+        )
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0.0f to Color.Transparent,
+                            0.5f to Color(0x22000000),
+                            0.7f to Color(0xCC000000),
+                            0.85f to Color.Black,
+                            1.0f to Color.Black
+                        ),
+                        startY = 0f
+                    )
+                )
+        )
+    }
+}
 
 // === ГЛАВНЫЙ ЭКРАН ===
 
@@ -2601,10 +2634,6 @@ fun MainScreen(
     val appsSectionListState = rememberLazyListState()
     val inputsListState = rememberLazyListState()
     val gamesListState = rememberLazyListState()
-    val providerListStates = remember {
-        mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>()
-    }
-
     val providerRowHeight = 130.dp
     val providerRowGap = 18.dp
 
@@ -2630,13 +2659,47 @@ fun MainScreen(
         )
     }
     val hasFavoritesSection = favoriteRowApps.isNotEmpty()
-    val favoritesRowIndex = 1
-
-    val appsRowIndex = 2
-    val inputsRowIndex = appsRowIndex + appRows.size
     val hasInputsSection = tvInputs.isNotEmpty()
-    val gamesRowIndex = inputsRowIndex + if (hasInputsSection) 1 else 0
-    val gamesSectionKey = if (hasInputsSection) 4 else 3
+
+    val visibleSectionOrder = remember(
+        sectionOrder,
+        showRecommendations,
+        hasFavoritesSection,
+        hasInputsSection,
+        games
+    ) {
+        sectionOrder.filter { sectionKey ->
+            when (sectionKey) {
+                "recommendations" -> showRecommendations
+                "favorites" -> hasFavoritesSection
+                "apps" -> true
+                "inputs" -> hasInputsSection
+                "games" -> games.isNotEmpty()
+                else -> false
+            }
+        }.let { ordered -> if ("apps" in ordered) ordered else listOf("apps") }
+    }
+
+    // Row indices are derived from the visible section order instead of hardcoded
+    // positions. Reordering sections in Settings therefore keeps focus tracking,
+    // scroll targets and per-row animations correct.
+    val rowIndexBySection = remember(visibleSectionOrder, appRows.size) {
+        val map = mutableMapOf<String, Int>()
+        var cursor = 0
+        visibleSectionOrder.forEach { key ->
+            map[key] = cursor
+            cursor += when (key) {
+                "apps" -> appRows.size
+                else -> 1
+            }
+        }
+        map
+    }
+    val recommendationsRowIndex = rowIndexBySection["recommendations"]
+    val favoritesRowIndex = rowIndexBySection["favorites"] ?: 0
+    val appsRowIndex = rowIndexBySection["apps"] ?: 0
+    val inputsRowIndex = rowIndexBySection["inputs"] ?: (appsRowIndex + appRows.size)
+    val gamesRowIndex = rowIndexBySection["games"] ?: (inputsRowIndex + 1)
     // During a reorder, focus may temporarily detach and reattach to the card's new cell.
     // Keep section styling anchored to the original section until move mode ends.
     val visualFocusedRowIndex = if (moveModePackage != null) {
@@ -2813,17 +2876,6 @@ fun MainScreen(
     var rootHeightPx by remember { mutableIntStateOf(0) }
     var recommendationsHeightPx by remember { mutableIntStateOf(0) }
 
-    val visibleSectionOrder = sectionOrder.filter { sectionKey ->
-        when (sectionKey) {
-            "recommendations" -> showRecommendations
-            "favorites" -> hasFavoritesSection
-            "apps" -> true
-            "inputs" -> hasInputsSection
-            "games" -> games.isNotEmpty()
-            else -> false
-        }
-    }.let { ordered -> if ("apps" in ordered) ordered else listOf("apps") }
-
     // One shared stack origin: sections flow in visibleSectionOrder from this
     // point. No section (including Apps or Recommendations) is used as an anchor.
     val defaultRecommendationsTopPx = rootHeightPx.toFloat() - recommendationsHeightPx.toFloat() -
@@ -2842,7 +2894,7 @@ fun MainScreen(
 
     // Уплотняем нижние секции только при фокусе на рекомендациях.
     val compactLowerSections =
-        showRecommendations && visualFocusedRowIndex == 0
+        recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex
     val compactSectionGap = 8.dp
 
     fun sectionGapPx(
@@ -3028,15 +3080,15 @@ fun MainScreen(
             focusLineYpx - inputsRowTopPx - appCardHalfHeightPx
         focusedRowIndex == gamesRowIndex ->
             focusLineYpx - gamesRowTopPx - gamesCardHalfHeightPx
-        showRecommendations && focusedRowIndex == 0 -> 0f
+        recommendationsRowIndex != null && focusedRowIndex == recommendationsRowIndex -> 0f
         else -> 0f
     }
     val activeSectionKey = when {
-        visualFocusedAppsRowOffset in appRows.indices -> 2 // Apps, including all wrapped lines
-        hasInputsSection && visualFocusedRowIndex == inputsRowIndex -> 3 // Inputs
-        visualFocusedRowIndex == gamesRowIndex -> gamesSectionKey // Games
-        hasFavoritesSection && visualFocusedRowIndex == favoritesRowIndex -> 1 // Favorites
-        visualFocusedRowIndex == 0 -> 0 // Recommendations
+        visualFocusedAppsRowOffset in appRows.indices -> appsRowIndex // Apps, including all wrapped lines
+        hasInputsSection && visualFocusedRowIndex == inputsRowIndex -> inputsRowIndex // Inputs
+        games.isNotEmpty() && visualFocusedRowIndex == gamesRowIndex -> gamesRowIndex // Games
+        hasFavoritesSection && visualFocusedRowIndex == favoritesRowIndex -> favoritesRowIndex // Favorites
+        recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex -> recommendationsRowIndex // Recommendations
         else -> -1 // Top controls / no section
     }
 
@@ -3060,7 +3112,7 @@ fun MainScreen(
     // на рекомендациях. В обычной навигации используем focusedRowIndex напрямую:
     // visualFocusedRowIndex намеренно фиксируется во время перемещения карточек.
     val hideLowerSectionTitles =
-        showRecommendations && visualFocusedRowIndex == 0
+        recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex
 
     // Keep inactive sections separated from the active one using the configured order.
     val sectionGap = 24.dp
@@ -3228,10 +3280,10 @@ fun MainScreen(
     var stableBackgroundTargetPx by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(activeSectionKey, sectionOrder) {
         stableBackgroundTargetPx = when {
-            activeSectionKey == 1 -> with(density) { (-30).dp.toPx() }
-            activeSectionKey == 2 -> contentTargetPx * 0.27f
-            hasInputsSection && activeSectionKey == 3 -> contentTargetPx * 0.27f
-            activeSectionKey == gamesSectionKey -> contentTargetPx * 0.28f
+            hasFavoritesSection && activeSectionKey == favoritesRowIndex -> with(density) { (-30).dp.toPx() }
+            activeSectionKey == appsRowIndex -> contentTargetPx * 0.27f
+            hasInputsSection && activeSectionKey == inputsRowIndex -> contentTargetPx * 0.27f
+            games.isNotEmpty() && activeSectionKey == gamesRowIndex -> contentTargetPx * 0.28f
             else -> 0f
         }
     }
@@ -3244,12 +3296,12 @@ fun MainScreen(
     )
 
     val recommendationsRowScale by animateFloatAsState(
-        targetValue = if (visualFocusedRowIndex == 0) 1.02f else 0.98f,
+        targetValue = if (recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex) 1.02f else 0.98f,
         animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
         label = "RecommendationsRowScale"
     )
     val recommendationsRowAlpha by animateFloatAsState(
-        targetValue = if (visualFocusedRowIndex == 0) 1f else 0.74f,
+        targetValue = if (recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex) 1f else 0.74f,
         animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
         label = "RecommendationsRowAlpha"
     )
@@ -3526,34 +3578,9 @@ fun MainScreen(
             }
     ) {
         if (!isOverlay) {
-            AsyncImage(
-                model = currentBgUri ?: R.drawable.bg_default,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = 1.0f
-                        scaleY = 1.0f
-                        translationY = bgOffsetY
-                    }
-            )
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colorStops = arrayOf(
-                                0.0f to Color.Transparent,
-                                0.5f to Color(0x22000000),
-                                0.7f to Color(0xCC000000),
-                                0.85f to Color.Black,
-                                1.0f to Color.Black
-                            ),
-                            startY = 0f
-                        )
-                    )
+            LauncherBackground(
+                backgroundUri = currentBgUri,
+                offsetY = bgOffsetY
             )
         }
 
@@ -3721,7 +3748,7 @@ fun MainScreen(
                             }
                             .onFocusChanged {
                                 if (it.hasFocus) {
-                                    focusedRowIndex = 0
+                                    recommendationsRowIndex?.let { idx -> focusedRowIndex = idx }
                                     activeRowTitle = null
                                 }
                             }
@@ -3731,7 +3758,7 @@ fun MainScreen(
                                     y = recommendationsSeparationState.value.roundToPx()
                                 )
                             }
-                            .zIndex(if (visualFocusedRowIndex == 0) 5f else 1f)
+                            .zIndex(if (recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex) 5f else 1f)
                     ) {
                         Box(
                             modifier = Modifier
@@ -3742,7 +3769,7 @@ fun MainScreen(
                                     scaleY = recommendationsRowScale
                                     transformOrigin = TransformOrigin(0.5f, 0.5f)
                                 }
-                                .zIndex(if (visualFocusedRowIndex == 0) 5f else 1f)
+                                .zIndex(if (recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex) 5f else 1f)
                         ) {
                             if (isRecommendationsLoading && mixedPrograms.isEmpty() && promoBanners.isEmpty()) {
                                 LazyRow(
@@ -3857,6 +3884,10 @@ fun MainScreen(
                             }
                             .zIndex(if (visualFocusedRowIndex == favoritesRowIndex) 5f else 1f)
                     ) {
+                        val favoriteGamePackageNames = remember(games) {
+                            games.mapTo(HashSet()) { it.packageName }
+                        }
+
                         Row(
                             modifier = Modifier
                                 .focusRestorer()
@@ -3868,11 +3899,8 @@ fun MainScreen(
                         ) {
                             favoriteRowApps.forEachIndexed { favoriteIndex, favoriteApp ->
                                 key(favoriteApp.packageName) {
-                                    val gamePackageNames = remember(games) {
-                                        games.mapTo(HashSet()) { it.packageName }
-                                    }
                                     val isGameFavorite =
-                                        favoriteApp.packageName in gamePackageNames
+                                        favoriteApp.packageName in favoriteGamePackageNames
                                     val upRequester = sectionNeighborRequester(
                                         "favorites", moveUp = true, preferredIndex = favoriteIndex
                                     )
@@ -3932,8 +3960,6 @@ fun MainScreen(
 
             // РЯДЫ ПРИЛОЖЕНИЙ (БЕЗ ВИРТУАЛИЗАЦИИ, СО ВСЕМИ ЖИВЫМИ ФОКУС-РЕКВЕСТЕРАМИ)
             if (rootHeightPx > 0) {
-                val horizontalScrollState = rememberScrollState()
-
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -4177,7 +4203,7 @@ fun MainScreen(
                             .zIndex(if (visualFocusedRowIndex == inputsRowIndex) 5f else 1f)
                     ) {
                         LazyRow(
-                            state = gamesListState,
+                            state = inputsListState,
                             horizontalArrangement = Arrangement.spacedBy(40.dp),
                             contentPadding = PaddingValues(horizontal = 48.dp),
                             modifier = Modifier
