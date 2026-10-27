@@ -2821,30 +2821,45 @@ fun MainScreen(
     }
     val favoritesRowTopPx = sectionTopPositionsPx["favorites"] ?: defaultRecommendationsTopPx
     val appsRowTopPx = sectionTopPositionsPx["apps"] ?: defaultRecommendationsTopPx
+
     val inputsRowTopPx = sectionTopPositionsPx["inputs"] ?: (
-            appsRowTopPx + with(density) { appSectionHeight.toPx() } + with(density) { 24.dp.toPx() }
+            appsRowTopPx +
+                    with(density) { appSectionHeight.toPx() } +
+                    with(density) { 24.dp.toPx() }
             )
-    val gamesRowTopPx = sectionTopPositionsPx["games"] ?: (
-            appsRowTopPx + with(density) { appSectionHeight.toPx() } + with(density) { 24.dp.toPx() }
-            )
+
     val providerRowsStartPx = inputsRowTopPx +
             with(density) { 85.dp.toPx() } +
             with(density) { 24.dp.toPx() }
 
+// Ряды каналов находятся между входами и играми.
+    val providerRowStepPx = with(density) {
+        (providerRowHeight + providerRowGap).toPx()
+    }
+
+    val gamesRowTopPx = if (providerGroups.isNotEmpty()) {
+        providerRowsStartPx + providerRowStepPx * providerGroups.size
+    } else {
+        sectionTopPositionsPx["games"] ?: (
+                appsRowTopPx +
+                        with(density) { appSectionHeight.toPx() } +
+                        with(density) { 24.dp.toPx() }
+                )
+    }
+
+
     val providerRowPositions = remember(
         providerGroups,
         providerRowsStartPx,
-        density
+        providerRowStepPx
     ) {
         providerGroups.mapIndexed { index, group ->
             group.packageName to (
-                    providerRowsStartPx +
-                            with(density) {
-                                (providerRowHeight + providerRowGap).toPx() * index
-                            }
+                    providerRowsStartPx + providerRowStepPx * index
                     )
         }.toMap()
     }
+
     val recommendationsTopPx = sectionTopPositionsPx["recommendations"] ?: defaultRecommendationsTopPx
     fun sectionNeighborRequester(
         currentSection: String,
@@ -3549,21 +3564,6 @@ fun MainScreen(
 
                             activeRowTitle = group.title
                         },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .offset {
-                                IntOffset(0, rowTop.roundToInt())
-                            }
-                            .fillMaxWidth()
-                            .height(providerRowHeight)
-                    )
-                }
-            }
-
-                key(group.packageName) {
-                    ProviderLogoRow(
-                        group = group,
-                        onChannelClick = onProgramClick,
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .offset {
