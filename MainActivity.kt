@@ -201,6 +201,15 @@ data class TvInputItem(
     val connectedDeviceName: String? = null
 )
 
+/** Precomputed focus neighbours of one app-grid cell. */
+private data class GridNeighbors(
+    val prev: FocusRequester?,
+    val next: FocusRequester?,
+    // null внутри сетки = искать соседа в соседней секции.
+    val up: FocusRequester?,
+    val down: FocusRequester?
+)
+
 /** Internal metadata used to turn Android TV passthrough sources into launcher tiles. */
 private data class DetectedTvInput(
     val id: String,
@@ -459,20 +468,35 @@ fun InputCard(
     }
 }
 
-/** Предзагружаем только первые уникальные баннеры: не забиваем сеть и память на ТВ-приставках. */
+/** Предзагружаем первые уникальные баннеры и запоминаем их пропорции заранее:
+ *  ширина карточки становится известна ДО её появления на экране, и ряд не дёргается.
+ *  Первые 12 — в полном размере (они видны сразу), следующие 18 — крошечным декодом
+ *  ради пропорций: память ТВ-приставки не трогаем, дисковый кеш с raw-данными всё равно
+ *  даёт полноразмерную картинку, когда карточка доезжает до экрана. */
 fun prefetchBannerSizes(context: Context, programs: Sequence<LiveProgramInfo>) {
     val imageLoader = context.imageLoader
     programs
         .mapNotNull { it.posterArtUri }
         .distinct()
-        .take(12)
-        .forEach { uri ->
+        .take(30)
+        .forEachIndexed { index, uri ->
+            val fullSize = index < 12
             val request = ImageRequest.Builder(context)
                 .data(uri)
-                .size(600, 340)
+                .size(if (fullSize) 600 else 64, if (fullSize) 340 else 64)
                 .crossfade(false)
+                .allowHardware(fullSize)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
+                .listener(
+                    onSuccess = { _, result ->
+                        val w = result.drawable.intrinsicWidth
+                        val h = result.drawable.intrinsicHeight
+                        if (w > 0 && h > 0) {
+                            PosterAspectRatioCache.put(uri.toString(), w.toFloat() / h.toFloat())
+                        }
+                    }
+                )
                 .build()
             imageLoader.enqueue(request)
         }
@@ -1825,34 +1849,6 @@ fun ProviderLogoRow(
 }
 
 
-@Composable
-fun getAppOrChannelTitle(program: LiveProgramInfo): String {
-    val context = LocalContext.current
-    return remember(program.channelName, program.intentUri) {
-        val appName = try {
-            val packageName = program.intentUri?.host ?: ""
-            if (packageName.isNotEmpty()) {
-                val pm = context.packageManager
-                val appInfo = pm.getApplicationInfo(packageName, 0)
-                pm.getApplicationLabel(appInfo).toString()
-            } else null
-        } catch (e: Exception) {
-            null
-        }
-
-        val channel = program.channelName.orEmpty()
-
-        when {
-            !appName.isNullOrEmpty() && channel.isNotEmpty() && !channel.equals(appName, ignoreCase = true) -> {
-                "$appName • $channel"
-            }
-            channel.isNotEmpty() -> channel
-            !appName.isNullOrEmpty() -> appName
-            else -> "Приложение"
-        }
-    }
-}
-
 // === КАРТОЧКА БАННЕРА С ПОЛОСОЙ ПРОГРЕССА ===
 
 @Composable
@@ -2304,29 +2300,6 @@ private object AppIconPanelColorCache {
     }
 }
 
-private object AppIconDrawableCache {
-    private const val MAX_ENTRIES = 128
-
-    private val states = object : LinkedHashMap<String, Drawable.ConstantState>(
-        MAX_ENTRIES, 0.75f, true
-    ) {
-        override fun removeEldestEntry(
-            eldest: MutableMap.MutableEntry<String, Drawable.ConstantState>?
-        ) = size > MAX_ENTRIES
-    }
-
-    @Synchronized
-    fun get(
-        packageName: String,
-        resources: android.content.res.Resources
-    ): Drawable? = states[packageName]?.newDrawable(resources)?.mutate()
-
-    @Synchronized
-    fun put(packageName: String, drawable: Drawable) {
-        drawable.constantState?.let { states[packageName] = it }
-    }
-}
-
 /** Resolve the application package from TV Provider metadata or its launch intent URI. */
 private fun resolveProgramAppPackageName(program: LiveProgramInfo): String? {
     program.appPackageName?.takeIf { it.isNotBlank() }?.let { return it }
@@ -2647,21 +2620,23 @@ private fun LauncherBackground(
                 }
         )
 
+        val scrimGradient = remember {
+            Brush.verticalGradient(
+                colorStops = arrayOf(
+                    0.0f to Color.Transparent,
+                    0.5f to Color(0x22000000),
+                    0.7f to Color(0xCC000000),
+                    0.85f to Color.Black,
+                    1.0f to Color.Black
+                ),
+                startY = 0f
+            )
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.0f to Color.Transparent,
-                            0.5f to Color(0x22000000),
-                            0.7f to Color(0xCC000000),
-                            0.85f to Color.Black,
-                            1.0f to Color.Black
-                        ),
-                        startY = 0f
-                    )
-                )
+                .background(scrimGradient)
         )
     }
 }
@@ -2747,7 +2722,6 @@ fun MainScreen(
     val recommendationsListState = rememberLazyListState()
     val favoritesHorizontalScrollState = rememberScrollState()
     val appsHorizontalListState = rememberLazyListState()
-    val appsSectionListState = rememberLazyListState()
     val inputsListState = rememberLazyListState()
     val gamesListState = rememberLazyListState()
     val providerRowHeight = 130.dp
@@ -2903,6 +2877,117 @@ fun MainScreen(
         return null
     }
 
+    fun sectionNeighborRequester(
+        currentSection: String,
+        moveUp: Boolean,
+        preferredIndex: Int
+    ): FocusRequester? {
+        // Из входов вниз — к первой группе каналов.
+        if (!moveUp && currentSection == "inputs" &&
+            providerGroups.isNotEmpty()
+        ) {
+            val group = providerGroups.first()
+            val requesters =
+                providerFocusRequesters[group.packageName].orEmpty()
+
+            if (requesters.isNotEmpty()) {
+                val index = (
+                        lastFocusedProviderIndices[group.packageName] ?: 0
+                        ).coerceIn(0, requesters.lastIndex)
+
+                return requesters[index]
+            }
+        }
+
+        val currentIndex = visibleSectionOrder.indexOf(currentSection)
+        if (currentIndex < 0) return null
+        val targetIndex = currentIndex + if (moveUp) -1 else 1
+        val targetSection = visibleSectionOrder.getOrNull(targetIndex) ?: return null
+        return when (targetSection) {
+            "favorites" -> findFocusableFavoriteRequester(lastFocusedFavoriteIndex)
+            "apps" -> {
+                if (appRows.isEmpty()) {
+                    null
+                } else {
+                    val targetRow = lastFocusedAppsRowOffset.coerceIn(0, appRows.lastIndex)
+                    findFocusableAppRequester(
+                        rowOffset = targetRow,
+                        preferredColumn = lastFocusedAppsColumn
+                    )
+                }
+            }
+            "inputs" -> if (inputFocusRequesters.isNotEmpty()) {
+                inputFocusRequesters[lastFocusedInputIndex.coerceIn(0, inputFocusRequesters.lastIndex)]
+            } else null
+            "games" -> findFocusableGameRequester(lastFocusedGameIndex)
+            else -> null
+        }
+    }
+
+    // Focus neighbours of every grid cell, computed once per data change. Every
+    // DPAD move recomposes the whole grid; re-running these searches for every
+    // card each time dominated the main thread on TV boxes.
+    val gridNeighborCache = remember(appRows, appFocusRequesters) {
+        fun requesterAt(row: Int, col: Int) =
+            appFocusRequesters.getOrNull(row)?.getOrNull(col)
+
+        fun searchVertical(targetRow: Int, col: Int): FocusRequester? {
+            val targetApps = appRows.getOrNull(targetRow) ?: return null
+            val clampedCol = col.coerceIn(0, (targetApps.size - 1).coerceAtLeast(0))
+            if (targetApps.getOrNull(clampedCol) != null) {
+                return requesterAt(targetRow, clampedCol)
+            }
+            var dist = 1
+            while (true) {
+                val leftCol = clampedCol - dist
+                val rightCol = clampedCol + dist
+                val hasLeft = leftCol >= 0 && targetApps.getOrNull(leftCol) != null
+                val hasRight = rightCol < targetApps.size && targetApps.getOrNull(rightCol) != null
+                when {
+                    hasLeft && hasRight ->
+                        return requesterAt(
+                            targetRow,
+                            if ((col - leftCol) <= (rightCol - col)) leftCol else rightCol
+                        )
+                    hasLeft -> return requesterAt(targetRow, leftCol)
+                    hasRight -> return requesterAt(targetRow, rightCol)
+                }
+                if (leftCol < 0 && rightCol >= targetApps.size) return null
+                dist++
+            }
+        }
+
+        appRows.mapIndexed { rowOffset, rowApps ->
+            List(normalizedMaxAppsPerRow) { slotIndex ->
+                val prev: FocusRequester? = run {
+                    var col = slotIndex - 1
+                    while (col >= 0) {
+                        if (rowApps.getOrNull(col) != null) return@run requesterAt(rowOffset, col)
+                        col--
+                    }
+                    null
+                }
+                val next: FocusRequester? = run {
+                    var col = slotIndex + 1
+                    while (col < rowApps.size) {
+                        if (rowApps.getOrNull(col) != null) return@run requesterAt(rowOffset, col)
+                        col++
+                    }
+                    null
+                }
+                GridNeighbors(
+                    prev = prev,
+                    next = next,
+                    up = if (rowOffset > 0) searchVertical(rowOffset - 1, slotIndex) else null,
+                    down = if (rowOffset < appRows.lastIndex) {
+                        searchVertical(rowOffset + 1, slotIndex)
+                    } else null
+                )
+            }
+        }
+    }
+
+
     // After a live reorder, the composable may be re-created in another grid slot.
     // Request focus again by package name so the moving card stays selected.
     LaunchedEffect(
@@ -2981,6 +3066,32 @@ fun MainScreen(
     val appCardWidth = 130.dp
     val appCardHeight = 74.dp
 
+    // Полные модификаторы карточек кешируются, чтобы карточки сетки пропускались
+    // рекомпозицией (skippable) при навигации пультом: иначе сотни карточек
+    // пересобирались на каждое нажатие только из-за новых экземпляров Modifier.
+    // focusProperties читает состояние лениво, в момент поиска фокуса, поэтому
+    // граничные переходы к соседним секциям остаются живыми.
+    val gridCardModifiers = remember(gridNeighborCache, appFocusRequesters) {
+        appRows.indices.map { rowOffset ->
+            List(normalizedMaxAppsPerRow) { slotIndex ->
+                Modifier
+                    .focusRequester(appFocusRequesters[rowOffset][slotIndex])
+                    .focusProperties {
+                        val n = gridNeighborCache.getOrNull(rowOffset)?.getOrNull(slotIndex)
+                        if (n?.prev != null) left = n.prev
+                        if (n?.next != null) right = n.next
+                        val upTarget = n?.up
+                            ?: sectionNeighborRequester("apps", moveUp = true, preferredIndex = slotIndex)
+                        val downTarget = n?.down
+                            ?: sectionNeighborRequester("apps", moveUp = false, preferredIndex = slotIndex)
+                        if (upTarget != null) up = upTarget
+                        if (downTarget != null) down = downTarget
+                    }
+                    .size(width = appCardWidth, height = appCardHeight)
+            }
+        }
+    }
+
     val appsAnchorHeight = 85.dp
     val appRowHeight = appCardHeight
     val appRowGap = appCardVerticalGap
@@ -3052,17 +3163,11 @@ fun MainScreen(
         }
     }
 
-    // Lay out every section as one ordered stack. Positions are derived from
-    // the stack origin and preceding section heights, never backwards from Apps.
-    val sectionTopPositionsPx = remember(
-        visibleSectionOrder,
-        sectionHeightsPx,
-        defaultRecommendationsTopPx,
-        compactLowerSections,
-        providerGroups,
-        providerRowHeight,
-        providerRowGap
-    ) {
+    // Layout positions are ALWAYS the normal (non-compact) ones: entering or
+    // leaving recommendations must not relayout any section. The compact shift
+    // is applied as a draw-time translationY, so the whole lower half slides as
+    // GPU layers instead of jumping through a full relayout of every section.
+    fun computeSectionPositions(compact: Boolean): Map<String, Float> {
         val positions = mutableMapOf<String, Float>()
         if (visibleSectionOrder.isNotEmpty()) {
             positions[visibleSectionOrder.first()] = defaultRecommendationsTopPx
@@ -3071,11 +3176,47 @@ fun MainScreen(
                 val next = visibleSectionOrder[index + 1]
                 positions[next] = positions.getValue(previous) +
                         sectionHeightsPx.getValue(previous) +
-                        sectionGapPx(previous, next, compactLowerSections)
+                        sectionGapPx(previous, next, compact)
             }
         }
-        positions
+        return positions
     }
+
+    val normalPositions = remember(
+        visibleSectionOrder,
+        sectionHeightsPx,
+        defaultRecommendationsTopPx,
+        providerGroups,
+        providerRowHeight,
+        providerRowGap
+    ) { computeSectionPositions(compact = false) }
+
+    val compactPositions = remember(
+        visibleSectionOrder,
+        sectionHeightsPx,
+        defaultRecommendationsTopPx,
+        providerGroups,
+        providerRowHeight,
+        providerRowGap
+    ) { computeSectionPositions(compact = true) }
+
+    // 0 = обычный режим, 1 = уплотнённый. Анимируется: секции «подплывают»
+    // слоями, а не прыгают раскладкой.
+    val compactFactor by animateFloatAsState(
+        targetValue = if (compactLowerSections) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = 300,
+            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
+        ),
+        label = "CompactFactor"
+    )
+
+    fun compactDelta(key: String): Float =
+        ((compactPositions[key] ?: normalPositions[key] ?: 0f) -
+                (normalPositions[key] ?: 0f)) * compactFactor
+
+    val sectionTopPositionsPx = normalPositions
+    // Раскладочные (статические) позиции — для offset секций.
     val favoritesRowTopPx = sectionTopPositionsPx["favorites"] ?: defaultRecommendationsTopPx
     val appsRowTopPx = sectionTopPositionsPx["apps"] ?: defaultRecommendationsTopPx
 
@@ -3084,6 +3225,14 @@ fun MainScreen(
                     with(density) { appSectionHeight.toPx() } +
                     with(density) { 24.dp.toPx() }
             )
+
+    val gamesRowTopPx = sectionTopPositionsPx["games"] ?: (
+            appsRowTopPx +
+                    with(density) { appSectionHeight.toPx() } +
+                    with(density) { 24.dp.toPx() }
+            )
+
+    val recommendationsTopPx = sectionTopPositionsPx["recommendations"] ?: defaultRecommendationsTopPx
 
     val providerRowsStartPx = inputsRowTopPx +
             with(density) { 85.dp.toPx() } +
@@ -3094,15 +3243,7 @@ fun MainScreen(
         (providerRowHeight + providerRowGap).toPx()
     }
 
-
-    val gamesRowTopPx = sectionTopPositionsPx["games"] ?: (
-            appsRowTopPx +
-                    with(density) { appSectionHeight.toPx() } +
-                    with(density) { 24.dp.toPx() }
-            )
-
-
-
+    // Раскладочные позиции рядов каналов (статические).
     val providerRowPositions = remember(
         providerGroups,
         providerRowsStartPx,
@@ -3115,53 +3256,7 @@ fun MainScreen(
         }.toMap()
     }
 
-    val recommendationsTopPx = sectionTopPositionsPx["recommendations"] ?: defaultRecommendationsTopPx
-    fun sectionNeighborRequester(
-        currentSection: String,
-        moveUp: Boolean,
-        preferredIndex: Int
-    ): FocusRequester? {
-        // Из входов вниз — к первой группе каналов.
-        if (!moveUp && currentSection == "inputs" &&
-            providerGroups.isNotEmpty()
-        ) {
-            val group = providerGroups.first()
-            val requesters =
-                providerFocusRequesters[group.packageName].orEmpty()
-
-            if (requesters.isNotEmpty()) {
-                val index = (
-                        lastFocusedProviderIndices[group.packageName] ?: 0
-                        ).coerceIn(0, requesters.lastIndex)
-
-                return requesters[index]
-            }
-        }
-
-        val currentIndex = visibleSectionOrder.indexOf(currentSection)
-        if (currentIndex < 0) return null
-        val targetIndex = currentIndex + if (moveUp) -1 else 1
-        val targetSection = visibleSectionOrder.getOrNull(targetIndex) ?: return null
-        return when (targetSection) {
-            "favorites" -> findFocusableFavoriteRequester(lastFocusedFavoriteIndex)
-            "apps" -> {
-                if (appRows.isEmpty()) {
-                    null
-                } else {
-                    val targetRow = lastFocusedAppsRowOffset.coerceIn(0, appRows.lastIndex)
-                    findFocusableAppRequester(
-                        rowOffset = targetRow,
-                        preferredColumn = lastFocusedAppsColumn
-                    )
-                }
-            }
-            "inputs" -> if (inputFocusRequesters.isNotEmpty()) {
-                inputFocusRequesters[lastFocusedInputIndex.coerceIn(0, inputFocusRequesters.lastIndex)]
-            } else null
-            "games" -> findFocusableGameRequester(lastFocusedGameIndex)
-            else -> null
-        }
-    }
+    // Позиции рядов каналов для таргетинга фокуса (статические — как у секций).
 
     val focusLineYpx = rootHeightPx * 0.5f
     val focusedAppsRowOffset = focusedRowIndex - appsRowIndex
@@ -3768,6 +3863,9 @@ fun MainScreen(
                             .offset {
                                 IntOffset(0, rowTop.roundToInt())
                             }
+                            .graphicsLayer {
+                                translationY = compactDelta(group.packageName)
+                            }
                             .fillMaxWidth()
                             .height(providerRowHeight)
                     )
@@ -3880,11 +3978,10 @@ fun MainScreen(
                                     activeRowTitle = null
                                 }
                             }
-                            .offset {
-                                IntOffset(
-                                    x = 0,
-                                    y = recommendationsSeparationState.value.roundToPx()
-                                )
+                            .graphicsLayer {
+                                // Separation is a draw-time translation, not a layout
+                                // offset: animating it must not relayout the section.
+                                translationY = recommendationsSeparationState.value.toPx()
                             }
                             .zIndex(if (recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex) 5f else 1f)
                     ) {
@@ -3987,11 +4084,11 @@ fun MainScreen(
                         .fillMaxWidth()
                         .height(85.dp)
                         .offset {
-                            IntOffset(
-                                x = 0,
-                                y = favoritesRowTopPx.roundToInt() +
-                                        favoritesSeparationState.value.roundToPx()
-                            )
+                            IntOffset(x = 0, y = favoritesRowTopPx.roundToInt())
+                        }
+                        .graphicsLayer {
+                            translationY = favoritesSeparationState.value.toPx() +
+                                    compactDelta("favorites")
                         }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
@@ -4067,21 +4164,25 @@ fun MainScreen(
                                 }
                             }
                         }
-                        if (!hideLowerSectionTitles && titleSectionId == "favorites") {
-                            Text(
-                                text = "Избранное",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Light,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .offset(y = (-30).dp)
-                                    .padding(start = 48.dp)
-                                    .zIndex(200f)
-                            )
-                        }
+                        val favoritesTitleAlpha by animateFloatAsState(
+                            targetValue = if (!hideLowerSectionTitles && titleSectionId == "favorites") 1f else 0f,
+                            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                            label = "FavoritesTitleAlpha"
+                        )
+                        Text(
+                            text = "Избранное",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Light,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .offset(y = (-30).dp)
+                                .padding(start = 48.dp)
+                                .zIndex(200f)
+                                .graphicsLayer { alpha = favoritesTitleAlpha }
+                        )
                     }
                 }
             }
@@ -4093,11 +4194,11 @@ fun MainScreen(
                         .fillMaxWidth()
                         .height(appSectionHeight)
                         .offset {
-                            IntOffset(
-                                x = 0,
-                                y = appsRowTopPx.roundToInt() +
-                                        appsSeparationState.value.roundToPx()
-                            )
+                            IntOffset(x = 0, y = appsRowTopPx.roundToInt())
+                        }
+                        .graphicsLayer {
+                            translationY = appsSeparationState.value.toPx() +
+                                    compactDelta("apps")
                         }
                         .graphicsLayer {
                             alpha = appsRowAlpha
@@ -4145,130 +4246,42 @@ fun MainScreen(
                                                 .height(appRowHeight)
                                         ) {
                                             if (app != null && app.icon != null) {
-                                                // 1. Предыдущий сосед в текущем ряду
-                                                val prevRequester = run {
-                                                    var col = slotIndex - 1
-                                                    while (col >= 0) {
-                                                        if (rowApps.getOrNull(col) != null) {
-                                                            return@run appFocusRequesters[rowOffset].getOrNull(col)
-                                                        }
-                                                        col--
-                                                    }
-                                                    null
-                                                }
-
-                                                // 2. Следующий сосед в текущем ряду
-                                                val nextRequester = run {
-                                                    var col = slotIndex + 1
-                                                    while (col < rowApps.size) {
-                                                        if (rowApps.getOrNull(col) != null) {
-                                                            return@run appFocusRequesters[rowOffset].getOrNull(col)
-                                                        }
-                                                        col++
-                                                    }
-                                                    null
-                                                }
-
-                                                // 3. Умный поиск соседа сверху
-                                                val upRequester = if (rowOffset > 0) {
-                                                    val upperRowApps = appRows[rowOffset - 1]
-                                                    val clampedCol = slotIndex.coerceIn(0, (upperRowApps.size - 1).coerceAtLeast(0))
-                                                    if (upperRowApps.getOrNull(clampedCol) != null) {
-                                                        appFocusRequesters.getOrNull(rowOffset - 1)?.getOrNull(clampedCol)
-                                                    } else {
-                                                        var foundCol: Int? = null
-                                                        var dist = 1
-                                                        while (true) {
-                                                            val leftCol = clampedCol - dist
-                                                            val rightCol = clampedCol + dist
-                                                            val hasLeft = leftCol >= 0 && upperRowApps.getOrNull(leftCol) != null
-                                                            val hasRight = rightCol < upperRowApps.size && upperRowApps.getOrNull(rightCol) != null
-
-                                                            if (hasLeft && hasRight) {
-                                                                foundCol = if ((slotIndex - leftCol) <= (rightCol - slotIndex)) leftCol else rightCol
-                                                                break
-                                                            } else if (hasLeft) {
-                                                                foundCol = leftCol
-                                                                break
-                                                            } else if (hasRight) {
-                                                                foundCol = rightCol
-                                                                break
-                                                            }
-                                                            if (!hasLeft && !hasRight && leftCol < 0 && rightCol >= upperRowApps.size) break
-                                                            dist++
-                                                        }
-                                                        foundCol?.let { appFocusRequesters.getOrNull(rowOffset - 1)?.getOrNull(it) }
-                                                    }
-                                                } else sectionNeighborRequester("apps", moveUp = true, preferredIndex = slotIndex)
-
-                                                // 4. Умный поиск соседа снизу
-                                                val downRequester = when {
-                                                    rowOffset < appRows.size - 1 -> {
-                                                        val lowerRowApps = appRows[rowOffset + 1]
-                                                        val clampedCol = slotIndex.coerceIn(0, (lowerRowApps.size - 1).coerceAtLeast(0))
-                                                        if (lowerRowApps.getOrNull(clampedCol) != null) {
-                                                            appFocusRequesters.getOrNull(rowOffset + 1)?.getOrNull(clampedCol)
-                                                        } else {
-                                                            var foundCol: Int? = null
-                                                            var dist = 1
-                                                            while (true) {
-                                                                val leftCol = clampedCol - dist
-                                                                val rightCol = clampedCol + dist
-                                                                val hasLeft = leftCol >= 0 && lowerRowApps.getOrNull(leftCol) != null
-                                                                val hasRight = rightCol < lowerRowApps.size && lowerRowApps.getOrNull(rightCol) != null
-
-                                                                if (hasLeft && hasRight) {
-                                                                    foundCol = if ((slotIndex - leftCol) <= (rightCol - slotIndex)) leftCol else rightCol
-                                                                    break
-                                                                } else if (hasLeft) {
-                                                                    foundCol = leftCol
-                                                                    break
-                                                                } else if (hasRight) {
-                                                                    foundCol = rightCol
-                                                                    break
-                                                                }
-                                                                if (!hasLeft && !hasRight && leftCol < 0 && rightCol >= lowerRowApps.size) break
-                                                                dist++
-                                                            }
-                                                            foundCol?.let { appFocusRequesters.getOrNull(rowOffset + 1)?.getOrNull(it) }
-                                                        }
-                                                    }
-                                                    else -> sectionNeighborRequester("apps", moveUp = false, preferredIndex = slotIndex)
-                                                }
-
-                                                AppCard(
-                                                    painter = rememberAsyncImagePainter(app.icon),
-                                                    onClick = {
+                                                // Лямбды кешируются, чтобы карточки сетки
+                                                // пропускались рекомпозицией при навигации.
+                                                val onGridAppClick = remember(app) {
+                                                    {
                                                         hostView.playSoundEffect(SoundEffectConstants.CLICK)
                                                         onAppClick(app.packageName)
-                                                    },
-                                                    onLongClick = {
+                                                    }
+                                                }
+                                                val onGridAppLongClick = remember(app) {
+                                                    {
                                                         selectedAppForMenu = app
                                                         selectedAppIsGame = false
                                                         selectedAppOriginSection = "apps"
-                                                    },
-                                                    isFastScrolling = isFastScrolling,
-                                                    isMoveMode = moveModePackage == app.packageName &&
-                                                            moveModeOriginSection == "apps",
-                                                    onFocus = {
-                                                        val targetRowIndex = appsRowIndex + rowOffset
-
+                                                    }
+                                                }
+                                                val onGridAppFocus = remember(app, rowOffset, slotIndex, appsRowIndex) {
+                                                    {
                                                         focusedProviderPackage = null
-                                                        focusedRowIndex = targetRowIndex
+                                                        focusedRowIndex = appsRowIndex + rowOffset
                                                         focusedAppColumnIndex = slotIndex
                                                         lastFocusedAppsRowOffset = rowOffset
                                                         lastFocusedAppsColumn = slotIndex
                                                         activeRowTitle = "Приложения"
-                                                    },
-                                                    modifier = Modifier
-                                                        .focusRequester(appFocusRequesters[rowOffset][slotIndex])
-                                                        .focusProperties {
-                                                            if (prevRequester != null) left = prevRequester
-                                                            if (nextRequester != null) right = nextRequester
-                                                            if (upRequester != null) up = upRequester
-                                                            if (downRequester != null) down = downRequester
-                                                        }
-                                                        .size(width = appCardWidth, height = appCardHeight)
+                                                    }
+                                                }
+                                                AppCard(
+                                                    painter = rememberAsyncImagePainter(app.icon),
+                                                    onClick = onGridAppClick,
+                                                    onLongClick = onGridAppLongClick,
+                                                    isFastScrolling = isFastScrolling,
+                                                    isMoveMode = moveModePackage == app.packageName &&
+                                                            moveModeOriginSection == "apps",
+                                                    onFocus = onGridAppFocus,
+                                                    modifier = gridCardModifiers.getOrNull(rowOffset)
+                                                        ?.getOrNull(slotIndex)
+                                                        ?: Modifier.size(appCardWidth, appCardHeight)
                                                 )
                                             } else {
                                                 Spacer(modifier = Modifier.size(width = appCardWidth, height = appCardHeight))
@@ -4280,21 +4293,25 @@ fun MainScreen(
                         }
                     }
 
-                    if (!hideLowerSectionTitles && titleSectionId == "apps") {
-                        Text(
-                            text = "Приложения",
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Light,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .offset(y = (-30).dp)
-                                .padding(start = 48.dp)
-                                .zIndex(200f)
-                        )
-                    }
+                    val appsTitleAlpha by animateFloatAsState(
+                        targetValue = if (!hideLowerSectionTitles && titleSectionId == "apps") 1f else 0f,
+                        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                        label = "AppsTitleAlpha"
+                    )
+                    Text(
+                        text = "Приложения",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Light,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset(y = (-30).dp)
+                            .padding(start = 48.dp)
+                            .zIndex(200f)
+                            .graphicsLayer { alpha = appsTitleAlpha }
+                    )
                 }
             }
 
@@ -4305,11 +4322,11 @@ fun MainScreen(
                         .fillMaxWidth()
                         .height(85.dp)
                         .offset {
-                            IntOffset(
-                                x = 0,
-                                y = inputsRowTopPx.roundToInt() +
-                                        inputsSeparationState.value.roundToPx()
-                            )
+                            IntOffset(x = 0, y = inputsRowTopPx.roundToInt())
+                        }
+                        .graphicsLayer {
+                            translationY = inputsSeparationState.value.toPx() +
+                                    compactDelta("inputs")
                         }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
@@ -4391,21 +4408,25 @@ fun MainScreen(
                             }
                         }
 
-                        if (!hideLowerSectionTitles && titleSectionId == "inputs") {
-                            Text(
-                                text = "Входы",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Light,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .offset(y = (-30).dp)
-                                    .padding(start = 48.dp)
-                                    .zIndex(200f)
-                            )
-                        }
+                        val inputsTitleAlpha by animateFloatAsState(
+                            targetValue = if (!hideLowerSectionTitles && titleSectionId == "inputs") 1f else 0f,
+                            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                            label = "InputsTitleAlpha"
+                        )
+                        Text(
+                            text = "Входы",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Light,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .offset(y = (-30).dp)
+                                .padding(start = 48.dp)
+                                .zIndex(200f)
+                                .graphicsLayer { alpha = inputsTitleAlpha }
+                        )
                     }
                 }
             }
@@ -4417,11 +4438,11 @@ fun MainScreen(
                         .fillMaxWidth()
                         .height(85.dp)
                         .offset {
-                            IntOffset(
-                                x = 0,
-                                y = gamesRowTopPx.roundToInt() +
-                                        gamesSeparationState.value.roundToPx()
-                            )
+                            IntOffset(x = 0, y = gamesRowTopPx.roundToInt())
+                        }
+                        .graphicsLayer {
+                            translationY = gamesSeparationState.value.toPx() +
+                                    compactDelta("games")
                         }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
@@ -4493,21 +4514,25 @@ fun MainScreen(
                                 }
                             }
                         }
-                        if (!hideLowerSectionTitles && titleSectionId == "games") {
-                            Text(
-                                text = "Игры",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Light,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .offset(y = (-30).dp)
-                                    .padding(start = 48.dp)
-                                    .zIndex(200f)
-                            )
-                        }
+                        val gamesTitleAlpha by animateFloatAsState(
+                            targetValue = if (!hideLowerSectionTitles && titleSectionId == "games") 1f else 0f,
+                            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                            label = "GamesTitleAlpha"
+                        )
+                        Text(
+                            text = "Игры",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Light,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .offset(y = (-30).dp)
+                                .padding(start = 48.dp)
+                                .zIndex(200f)
+                                .graphicsLayer { alpha = gamesTitleAlpha }
+                        )
                     }
                 }
             }
