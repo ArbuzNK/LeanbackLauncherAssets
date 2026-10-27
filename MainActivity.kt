@@ -272,7 +272,8 @@ fun AppCard(
     modifier: Modifier = Modifier,
     isFastScrolling: Boolean = false,
     isMoveMode: Boolean = false,
-    onFocus: (() -> Unit)? = null
+    onFocus: (() -> Unit)? = null,
+    backgroundColor: Color = Color.Transparent,
 ) {
     var isFocused by remember { mutableStateOf(false) }
     // TV remotes send DPAD_CENTER/ENTER key events rather than pointer long-clicks.
@@ -296,6 +297,7 @@ fun AppCard(
 
     Box(
         modifier = modifier
+            .background(backgroundColor, RectangleShape)
             .zIndex(if (isFocused) 10f else 1f)
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
@@ -307,7 +309,11 @@ fun AppCard(
             }
             .then(
                 if (isFocused && !isFastScrolling) {
-                    Modifier.shadow(if (isMoveMode) 16.dp else 11.dp, RoundedCornerShape(0.dp), clip = false)
+                    Modifier.shadow(
+                        if (isMoveMode) 16.dp else 11.dp,
+                        RoundedCornerShape(0.dp),
+                        clip = false
+                    )
                 } else {
                     Modifier
                 }
@@ -1747,7 +1753,7 @@ fun ProviderLogoRow(
     channelFocusRequesters: List<FocusRequester> = emptyList(),
     upFocusRequesters: List<FocusRequester> = emptyList(),
     downFocusRequesters: List<FocusRequester> = emptyList(),
-    onChannelFocus: (Int) -> Unit = {}
+    onChannelFocus: (Int) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
@@ -1785,6 +1791,7 @@ fun ProviderLogoRow(
                     painter = rememberAsyncImagePainter(channel.logoUri),
                     onClick = { onChannelClick(channel.intentUri) },
                     isFastScrolling = isFastScrolling,
+                    backgroundColor = Color.White,
                     modifier = Modifier
                         .then(
                             channelFocusRequesters.getOrNull(channelIndex)?.let {
@@ -2837,15 +2844,13 @@ fun MainScreen(
         (providerRowHeight + providerRowGap).toPx()
     }
 
-    val gamesRowTopPx = if (providerGroups.isNotEmpty()) {
-        providerRowsStartPx + providerRowStepPx * providerGroups.size
-    } else {
-        sectionTopPositionsPx["games"] ?: (
-                appsRowTopPx +
-                        with(density) { appSectionHeight.toPx() } +
-                        with(density) { 24.dp.toPx() }
-                )
-    }
+
+    val gamesRowTopPx = sectionTopPositionsPx["games"] ?: (
+            appsRowTopPx +
+                    with(density) { appSectionHeight.toPx() } +
+                    with(density) { 24.dp.toPx() }
+            )
+
 
 
     val providerRowPositions = remember(
@@ -2871,23 +2876,6 @@ fun MainScreen(
             providerGroups.isNotEmpty()
         ) {
             val group = providerGroups.first()
-            val requesters =
-                providerFocusRequesters[group.packageName].orEmpty()
-
-            if (requesters.isNotEmpty()) {
-                val index = (
-                        lastFocusedProviderIndices[group.packageName] ?: 0
-                        ).coerceIn(0, requesters.lastIndex)
-
-                return requesters[index]
-            }
-        }
-
-        // Из игр вверх — к последней группе каналов.
-        if (moveUp && currentSection == "games" &&
-            providerGroups.isNotEmpty()
-        ) {
-            val group = providerGroups.last()
             val requesters =
                 providerFocusRequesters[group.packageName].orEmpty()
 
