@@ -4349,7 +4349,7 @@ fun MainScreen(
                     ) {
                         LazyRow(
                             state = inputsListState,
-                            horizontalArrangement = Arrangement.spacedBy(40.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             contentPadding = PaddingValues(horizontal = 48.dp),
                             modifier = Modifier
                                 .focusRestorer()
