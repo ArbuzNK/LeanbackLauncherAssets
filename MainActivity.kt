@@ -108,7 +108,6 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
-import androidx.compose.ui.draw.drawWithContent
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -1744,7 +1743,11 @@ fun ProviderLogoRow(
     group: ChannelProviderGroup,
     onChannelClick: (Uri?) -> Unit,
     modifier: Modifier = Modifier,
-    isFastScrolling: Boolean = false
+    isFastScrolling: Boolean = false,
+    channelFocusRequesters: List<FocusRequester> = emptyList(),
+    upFocusRequesters: List<FocusRequester> = emptyList(),
+    downFocusRequesters: List<FocusRequester> = emptyList(),
+    onChannelFocus: (Int) -> Unit = {}
 ) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
@@ -1771,16 +1774,42 @@ fun ProviderLogoRow(
                 .fillMaxWidth()
                 .height(85.dp)
         ) {
-            items(
+            itemsIndexed(
                 items = group.channels,
-                key = { channel -> "provider_${group.packageName}_${channel.id}" },
-                contentType = { "provider_channel_card" }
-            ) { channel ->
+                key = { _, channel ->
+                    "provider_${group.packageName}_${channel.id}"
+                },
+                contentType = { _, _ -> "provider_channel_card" }
+            ) { channelIndex, channel ->
                 AppCard(
                     painter = rememberAsyncImagePainter(channel.logoUri),
                     onClick = { onChannelClick(channel.intentUri) },
                     isFastScrolling = isFastScrolling,
-                    modifier = Modifier.size(130.dp, 74.dp)
+                    modifier = Modifier
+                        .then(
+                            channelFocusRequesters.getOrNull(channelIndex)?.let {
+                                Modifier.focusRequester(it)
+                            } ?: Modifier
+                        )
+                        .focusProperties {
+                            if (upFocusRequesters.isNotEmpty()) {
+                                up = upFocusRequesters[
+                                    channelIndex.coerceIn(0, upFocusRequesters.lastIndex)
+                                ]
+                            }
+
+                            if (downFocusRequesters.isNotEmpty()) {
+                                down = downFocusRequesters[
+                                    channelIndex.coerceIn(0, downFocusRequesters.lastIndex)
+                                ]
+                            }
+                        }
+                        .onFocusChanged { state ->
+                            if (state.isFocused) {
+                                onChannelFocus(channelIndex)
+                            }
+                        }
+                        .size(130.dp, 74.dp)
                 )
             }
         }
@@ -2460,6 +2489,13 @@ fun MainScreen(
     var lastFocusedFavoriteIndex by remember { mutableIntStateOf(0) }
     var lastFocusedInputIndex by remember { mutableIntStateOf(0) }
     var lastFocusedGameIndex by remember { mutableIntStateOf(0) }
+    var focusedProviderPackage by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var lastFocusedProviderIndices by remember {
+        mutableStateOf<Map<String, Int>>(emptyMap())
+    }
     var activeRowTitle by remember { mutableStateOf<String?>(null) }
     // Use an immediate content shift when focus moves between wrapped app rows,
     // so the newly focused card is already on the fixed focus line.
@@ -2543,6 +2579,13 @@ fun MainScreen(
     val gameFocusRequesters = remember(gameFocusKeys) {
         games.map { game ->
             gameFocusRequesterCache.getOrPut(game.packageName) { FocusRequester() }
+        }
+    }
+    val providerFocusRequesters = remember(providerGroups) {
+        providerGroups.associate { group ->
+            group.packageName to List(group.channels.size) {
+                FocusRequester()
+            }
         }
     }
 
@@ -2758,7 +2801,10 @@ fun MainScreen(
         visibleSectionOrder,
         sectionHeightsPx,
         defaultRecommendationsTopPx,
-        compactLowerSections
+        compactLowerSections,
+        providerGroups,
+        providerRowHeight,
+        providerRowGap
     ) {
         val positions = mutableMapOf<String, Float>()
         if (visibleSectionOrder.isNotEmpty()) {
@@ -2805,6 +2851,40 @@ fun MainScreen(
         moveUp: Boolean,
         preferredIndex: Int
     ): FocusRequester? {
+        // Из входов вниз — к первой группе каналов.
+        if (!moveUp && currentSection == "inputs" &&
+            providerGroups.isNotEmpty()
+        ) {
+            val group = providerGroups.first()
+            val requesters =
+                providerFocusRequesters[group.packageName].orEmpty()
+
+            if (requesters.isNotEmpty()) {
+                val index = (
+                        lastFocusedProviderIndices[group.packageName] ?: 0
+                        ).coerceIn(0, requesters.lastIndex)
+
+                return requesters[index]
+            }
+        }
+
+        // Из игр вверх — к последней группе каналов.
+        if (moveUp && currentSection == "games" &&
+            providerGroups.isNotEmpty()
+        ) {
+            val group = providerGroups.last()
+            val requesters =
+                providerFocusRequesters[group.packageName].orEmpty()
+
+            if (requesters.isNotEmpty()) {
+                val index = (
+                        lastFocusedProviderIndices[group.packageName] ?: 0
+                        ).coerceIn(0, requesters.lastIndex)
+
+                return requesters[index]
+            }
+        }
+
         val currentIndex = visibleSectionOrder.indexOf(currentSection)
         if (currentIndex < 0) return null
         val targetIndex = currentIndex + if (moveUp) -1 else 1
@@ -2845,8 +2925,16 @@ fun MainScreen(
     }
     val appCardHalfHeightPx = with(density) { appCardHeight.toPx() / 2f }
     val gamesCardHalfHeightPx = with(density) { 74.dp.toPx() / 2f }
+    val focusedProviderRowTopPx = focusedProviderPackage
+        ?.let { packageName -> providerRowPositions[packageName] }
     val contentTargetPx = when {
         rootHeightPx <= 0 -> 0f
+
+        focusedProviderRowTopPx != null ->
+            focusLineYpx -
+                    focusedProviderRowTopPx -
+                    with(density) { 64.dp.toPx() }
+
         hasFavoritesSection && focusedRowIndex == favoritesRowIndex ->
             focusLineYpx - favoritesRowTopPx - appCardHalfHeightPx
         focusedAppsRowOffset in appRows.indices ->
@@ -3421,9 +3509,56 @@ fun MainScreen(
                     }
                 }
         ) {
-            providerGroups.forEach { group ->
+            providerGroups.forEachIndexed { groupIndex, group ->
                 val rowTop = providerRowPositions[group.packageName]
-                    ?: return@forEach
+                    ?: return@forEachIndexed
+
+                val channelRequesters =
+                    providerFocusRequesters[group.packageName].orEmpty()
+
+                val upRequesters = if (groupIndex > 0) {
+                    providerFocusRequesters[
+                        providerGroups[groupIndex - 1].packageName
+                    ].orEmpty()
+                } else {
+                    inputFocusRequesters
+                }
+
+                val downRequesters = if (groupIndex < providerGroups.lastIndex) {
+                    providerFocusRequesters[
+                        providerGroups[groupIndex + 1].packageName
+                    ].orEmpty()
+                } else {
+                    gameFocusRequesters
+                }
+
+                key(group.packageName) {
+                    ProviderLogoRow(
+                        group = group,
+                        onChannelClick = onProgramClick,
+                        isFastScrolling = isFastScrolling,
+                        channelFocusRequesters = channelRequesters,
+                        upFocusRequesters = upRequesters,
+                        downFocusRequesters = downRequesters,
+                        onChannelFocus = { channelIndex ->
+                            focusedProviderPackage = group.packageName
+
+                            lastFocusedProviderIndices =
+                                lastFocusedProviderIndices +
+                                        (group.packageName to channelIndex)
+
+                            activeRowTitle = group.title
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset {
+                                IntOffset(0, rowTop.roundToInt())
+                            }
+                            .fillMaxWidth()
+                            .height(providerRowHeight)
+                    )
+                }
+            }
 
                 key(group.packageName) {
                     ProviderLogoRow(
@@ -3715,6 +3850,7 @@ fun MainScreen(
                                         isMoveMode = moveModePackage == favoriteApp.packageName &&
                                                 moveModeOriginSection == "favorites",
                                         onFocus = {
+                                            focusedProviderPackage = null
                                             focusedRowIndex = favoritesRowIndex
                                             focusedAppColumnIndex = favoriteIndex
                                             lastFocusedFavoriteIndex = favoriteIndex
@@ -3919,6 +4055,7 @@ fun MainScreen(
                                                     onFocus = {
                                                         val targetRowIndex = appsRowIndex + rowOffset
 
+                                                        focusedProviderPackage = null
                                                         focusedRowIndex = targetRowIndex
                                                         focusedAppColumnIndex = slotIndex
                                                         lastFocusedAppsRowOffset = rowOffset
@@ -4038,6 +4175,7 @@ fun MainScreen(
                                         }
                                     },
                                     onFocus = {
+                                        focusedProviderPackage = null
                                         focusedRowIndex = inputsRowIndex
                                         lastFocusedInputIndex = inputIndex
                                         activeRowTitle = "Входы"
@@ -4139,6 +4277,7 @@ fun MainScreen(
                                         isMoveMode = moveModePackage == game.packageName &&
                                                 moveModeOriginSection == "games",
                                         onFocus = {
+                                            focusedProviderPackage = null
                                             focusedRowIndex = gamesRowIndex
                                             lastFocusedGameIndex = gameIndex
                                             activeRowTitle = "Игры"
