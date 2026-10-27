@@ -2356,8 +2356,12 @@ private fun LeanbackPromoCard(
     val context = LocalContext.current
     val panelColor by animateColorAsState(
         targetValue = panelBackgroundColor(dominantPanelColor, isFocused),
-        animationSpec = tween(durationMillis = 180),
-        label = "AdPanelColor_${banner.id}"
+        animationSpec = if (isFastScrolling) {
+            snap()
+        } else {
+            tween(durationMillis = 180)
+        },
+        label = "ProgramPanelColor"
     )
     val leanbackCurve = remember { CubicBezierEasing(0.2f, 0.0f, 0.2f, 1.0f) }
     val scaleAnimated by animateFloatAsState(
