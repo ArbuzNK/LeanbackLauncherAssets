@@ -65,6 +65,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
@@ -1870,11 +1871,13 @@ fun LeanbackCard(
     }
     var pendingImageAspectRatio by remember(program.posterArtUri) { mutableFloatStateOf(Float.NaN) }
     var dominantPanelColor by remember(program.appPackageName, program.intentUri) {
-        mutableStateOf(Color(0xFF37474F))
+        mutableStateOf(
+            program.appPackageName?.let { AppIconPanelColorCache[it] } ?: Color(0xFF37474F)
+        )
     }
     val panelColor by animateColorAsState(
         targetValue = panelBackgroundColor(dominantPanelColor, isFocused),
-        animationSpec = tween(durationMillis = 180),
+        animationSpec = if (isFastScrolling) snap() else tween(durationMillis = 180),
         label = "ProgramPanelColor"
     )
     val fastScrollingNow by rememberUpdatedState(isFastScrolling)
@@ -1907,47 +1910,62 @@ fun LeanbackCard(
         resolveProgramAppPackageName(program)
     }
 
-    // Получаем иконку заранее в фоновом потоке. Она используется и для цветовой панели,
-    // и как полупрозрачный белый знак справа в неактивной карточке.
-    val appIconDrawable by produceState<Drawable?>(
-        initialValue = null,
-        key1 = programPackageName
+    // Водяной знак берёт передний слой Adaptive Icon, чтобы не превращать цветной фон
+    // иконки в белый квадрат. Готовый Painter кешируется per-пакет: во время быстрой
+    // прокрутки не нужны ни Coil, ни PackageManager — только чтение из HashMap.
+    val appIconPainter by produceState<Painter?>(
+        initialValue = AppIconPainterCache.get(programPackageName),
+        key1 = programPackageName,
+        key2 = isFastScrolling
     ) {
+        if (isFastScrolling) {
+            value = AppIconPainterCache.get(programPackageName)
+            return@produceState
+        }
         value = programPackageName?.let { packageName ->
-            withContext(Dispatchers.IO) {
-                runCatching { context.packageManager.getApplicationIcon(packageName) }.getOrNull()
+            AppIconPainterCache.get(packageName) ?: run {
+                val drawable = withContext(Dispatchers.IO) {
+                    runCatching { context.packageManager.getApplicationIcon(packageName) }.getOrNull()
+                } ?: return@let null
+                val foreground =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && drawable is AdaptiveIconDrawable) {
+                        drawable.foreground ?: drawable
+                    } else {
+                        drawable
+                    }
+                val painter = withContext(Dispatchers.Default) {
+                    runCatching {
+                        drawableToWatermarkPainter(
+                            foreground.constantState?.newDrawable()?.mutate() ?: foreground
+                        )
+                    }.getOrNull()
+                }
+                if (painter != null) AppIconPainterCache.put(packageName, painter)
+                painter
             }
         }
     }
 
-    // Для водяного знака берём передний слой Adaptive Icon, чтобы не превращать
-    // цветной фон иконки в белый квадрат. Исходная полная иконка остаётся для анализа цвета.
-    val watermarkIconDrawable = remember(appIconDrawable) {
-        val icon = appIconDrawable ?: return@remember null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && icon is AdaptiveIconDrawable) {
-            icon.foreground?.constantState?.newDrawable()?.mutate() ?: icon
-        } else {
-            icon.constantState?.newDrawable()?.mutate() ?: icon
-        }
-    }
-    val watermarkIconPainter = rememberAsyncImagePainter(model = watermarkIconDrawable)
-
     // Нижняя панель берёт цвет из полной иконки приложения-владельца рекомендации,
-    // а не из постера/баннера. Декодирование и анализ выполняются вне UI-потока.
-    LaunchedEffect(programPackageName, appIconDrawable) {
+    // а не из постера/баннера. Во время быстрой прокрутки PackageManager не трогаем:
+    // показываем цвет из кеша, новые цвета вычисляем после остановки.
+    LaunchedEffect(programPackageName, isFastScrolling) {
         val packageName = programPackageName ?: return@LaunchedEffect
-        val appIcon = appIconDrawable ?: return@LaunchedEffect
         val cachedColor = AppIconPanelColorCache[packageName]
         if (cachedColor != null) {
             dominantPanelColor = cachedColor
-        } else {
-            val extracted = withContext(Dispatchers.Default) {
-                extractDominantPanelColor(appIcon)
-            }
-            if (extracted != null) {
-                AppIconPanelColorCache.put(packageName, extracted)
-                dominantPanelColor = extracted
-            }
+            return@LaunchedEffect
+        }
+        if (isFastScrolling) return@LaunchedEffect
+        val appIcon = withContext(Dispatchers.IO) {
+            runCatching { context.packageManager.getApplicationIcon(packageName) }.getOrNull()
+        } ?: return@LaunchedEffect
+        val extracted = withContext(Dispatchers.Default) {
+            extractDominantPanelColor(appIcon)
+        }
+        if (extracted != null) {
+            AppIconPanelColorCache.put(packageName, extracted)
+            dominantPanelColor = extracted
         }
     }
 
@@ -1963,6 +1981,12 @@ fun LeanbackCard(
                 .diskCachePolicy(CachePolicy.ENABLED)
                 .listener(
                     onSuccess = { _, result ->
+                        // Сохраняем декодированный hardware-битмап: во время быстрой
+                        // прокрутки карточки рисуют его напрямую, без Coil.
+                        PosterBitmapCache.put(
+                            program.posterArtUri?.toString(),
+                            (result.drawable as? BitmapDrawable)?.bitmap
+                        )
                         // Размеры постера нужны только для адаптивной ширины карточки;
                         // цвет панели берётся отдельно из иконки приложения.
                         val w = result.drawable.intrinsicWidth
@@ -2023,12 +2047,27 @@ fun LeanbackCard(
             ) {
                 when {
                     program.posterArtUri != null -> {
-                        AsyncImage(
-                            model = imageRequest,
-                            contentDescription = program.title,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        // Быстрая прокрутка: рисуем ранее декодированный hardware-битмап
+                        // напрямую — декод, сеть и загрузка текстур уже сделаны. Постеры,
+                        // которые ещё не показывались, появятся сразу после остановки.
+                        val cachedPoster = PosterBitmapCache.get(program.posterArtUri.toString())
+                        if (isFastScrolling) {
+                            if (cachedPoster != null) {
+                                Image(
+                                    bitmap = cachedPoster.asImageBitmap(),
+                                    contentDescription = program.title,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        } else {
+                            AsyncImage(
+                                model = imageRequest,
+                                contentDescription = program.title,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                     program.drawableResId != null -> {
                         Image(
@@ -2096,17 +2135,19 @@ fun LeanbackCard(
                 // In the idle state, show a subtle white app mark at the right edge
                 // of the colored lower panel. It disappears while focused so the title
                 // and description can use the full row width. Nothing is drawn over the poster.
-                if (!isFocused && watermarkIconDrawable != null) {
-                    Image(
-                        painter = watermarkIconPainter,
-                        contentDescription = null,
-                        contentScale = ContentScale.Fit,
-                        colorFilter = ColorFilter.tint(Color.White),
-                        modifier = Modifier
-                            // Keep the watermark inside the original panel height.
-                            .size(16.dp)
-                            .graphicsLayer { alpha = 0.42f }
-                    )
+                if (!isFocused) {
+                    appIconPainter?.let { painter ->
+                        Image(
+                            painter = painter,
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            colorFilter = ColorFilter.tint(Color.White),
+                            modifier = Modifier
+                                // Keep the watermark inside the original panel height.
+                                .size(16.dp)
+                                .graphicsLayer { alpha = 0.42f }
+                        )
+                    }
                 }
             }
         }
@@ -2180,6 +2221,59 @@ private object PosterAspectRatioCache {
 
         ratios[url] = ratio
     }
+}
+
+/** Decoded poster bitmaps shared by all recommendation cards. A hardware bitmap is
+ *  backed by a GPU texture uploaded once, so drawing it during fast scrolling costs
+ *  almost nothing: no decoding, no allocations, no network, no texture uploads. */
+private object PosterBitmapCache {
+    private const val MAX_ENTRIES = 48
+
+    private val bitmaps = object : LinkedHashMap<String, Bitmap>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) =
+            size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun get(url: String?): Bitmap? = if (url.isNullOrBlank()) null else bitmaps[url]
+
+    @Synchronized
+    fun put(url: String?, bitmap: Bitmap?) {
+        if (url.isNullOrBlank() || bitmap == null || bitmap.isRecycled) return
+        bitmaps[url] = bitmap
+    }
+}
+
+/** Process-wide cache of watermark painters, so fast scrolling never touches
+ *  PackageManager or Coil: the painter is ready together with its GPU texture. */
+private object AppIconPainterCache {
+    private const val MAX_ENTRIES = 96
+
+    private val painters = object : LinkedHashMap<String, Painter>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Painter>?) =
+            size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun get(packageName: String?): Painter? = packageName?.let { painters[it] }
+
+    @Synchronized
+    fun put(packageName: String, painter: Painter) {
+        painters[packageName] = painter
+    }
+}
+
+/** Draws a drawable once into a small software bitmap and wraps it as a Painter. */
+private fun drawableToWatermarkPainter(drawable: Drawable, sizePx: Int = 96): Painter? {
+    return runCatching {
+        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val oldBounds = Rect(drawable.bounds)
+        drawable.setBounds(0, 0, sizePx, sizePx)
+        drawable.draw(canvas)
+        drawable.bounds = oldBounds
+        androidx.compose.ui.graphics.painter.BitmapPainter(bitmap.asImageBitmap())
+    }.getOrNull()
 }
 
 /** Process-wide cache avoids sampling the same application icon for every programme card. */
@@ -2413,6 +2507,14 @@ private fun LeanbackPromoCard(
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
             .allowHardware(true)
+            .listener(
+                onSuccess = { _, result ->
+                    PosterBitmapCache.put(
+                        "promo:${remoteUrl ?: banner.id}",
+                        (result.drawable as? BitmapDrawable)?.bitmap
+                    )
+                }
+            )
             .build()
     }
 
@@ -2450,15 +2552,29 @@ private fun LeanbackPromoCard(
                     .height(imageHeight)
                     .background(Color(0xFF202020))
             ) {
-                AsyncImage(
-                    model = imageRequest,
-                    contentDescription = banner.title,
-                    // При автоматической ширине пропорции уже совпадают с контейнером,
-                    // поэтому Fit сохраняет весь кадр без обрезки. Ручной vertical-режим
-                    // оставляет прежнее поведение Crop.
-                    contentScale = if (banner.isVertical) ContentScale.Crop else ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
-                )
+                // Во время быстрой прокрутки рекламу не грузим через Coil: рисуем
+                // ранее декодированный битмап из кеша либо тёмный фон карточки.
+                val cachedAd = PosterBitmapCache.get("promo:${remoteUrl ?: banner.id}")
+                if (isFastScrolling) {
+                    if (cachedAd != null) {
+                        Image(
+                            bitmap = cachedAd.asImageBitmap(),
+                            contentDescription = banner.title,
+                            contentScale = if (banner.isVertical) ContentScale.Crop else ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                } else {
+                    AsyncImage(
+                        model = imageRequest,
+                        contentDescription = banner.title,
+                        // При автоматической ширине пропорции уже совпадают с контейнером,
+                        // поэтому Fit сохраняет весь кадр без обрезки. Ручной vertical-режим
+                        // оставляет прежнее поведение Crop.
+                        contentScale = if (banner.isVertical) ContentScale.Crop else ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
 
             Column(
@@ -3533,6 +3649,18 @@ fun MainScreen(
                     return@onPreviewKeyEvent true
                 }
 
+                // While fast-scrolling, key repeats only move focus. Skip all state
+                // bookkeeping for them: the repeat flood at ~30 events/sec otherwise
+                // saturates the main thread on TV boxes and the launcher looks frozen
+                // until the key is released.
+                if (isFastScrolling &&
+                    nativeEvent.action == KeyEvent.ACTION_DOWN &&
+                    (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+                            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+                ) {
+                    return@onPreviewKeyEvent false
+                }
+
                 if (nativeEvent.action == KeyEvent.ACTION_DOWN) {
 
                     // Use Android's native navigation effects, like the TV launcher.
@@ -3818,7 +3946,7 @@ fun MainScreen(
 
                                                 Box(
                                                     modifier = Modifier
-                                                        .zIndex(if (isCardFocused) 100f else 1f)
+                                                        .zIndex(if (isCardFocused && !isFastScrolling) 100f else 1f)
                                                         .onFocusChanged { isCardFocused = it.isFocused }
                                                 ) {
                                                     LeanbackCard(
