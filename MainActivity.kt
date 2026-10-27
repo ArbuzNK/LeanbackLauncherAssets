@@ -2212,6 +2212,29 @@ private object AppIconPanelColorCache {
     }
 }
 
+private object AppIconDrawableCache {
+    private const val MAX_ENTRIES = 128
+
+    private val states = object : LinkedHashMap<String, Drawable.ConstantState>(
+        MAX_ENTRIES, 0.75f, true
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, Drawable.ConstantState>?
+        ) = size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun get(
+        packageName: String,
+        resources: android.content.res.Resources
+    ): Drawable? = states[packageName]?.newDrawable(resources)?.mutate()
+
+    @Synchronized
+    fun put(packageName: String, drawable: Drawable) {
+        drawable.constantState?.let { states[packageName] = it }
+    }
+}
+
 /** Resolve the application package from TV Provider metadata or its launch intent URI. */
 private fun resolveProgramAppPackageName(program: LiveProgramInfo): String? {
     program.appPackageName?.takeIf { it.isNotBlank() }?.let { return it }
@@ -3087,39 +3110,6 @@ fun MainScreen(
         ),
         label = "FavoritesSeparation"
     )
-    val appsSeparationY by animateDpAsState(
-        targetValue = if (moveModePackage != null) {
-            moveModeLockedSectionOffsets?.get("apps") ?: targetSectionSeparation("apps")
-        } else targetSectionSeparation("apps"),
-
-        animationSpec = tween(
-            durationMillis = 420,
-            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
-        ),
-        label = "AppsSeparation"
-    )
-    val inputsSeparationY by animateDpAsState(
-        targetValue = if (moveModePackage != null) {
-            moveModeLockedSectionOffsets?.get("inputs") ?: targetSectionSeparation("inputs")
-        } else targetSectionSeparation("inputs"),
-
-        animationSpec = tween(
-            durationMillis = 420,
-            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
-        ),
-        label = "InputsSeparation"
-    )
-    val gamesSeparationY by animateDpAsState(
-        targetValue = if (moveModePackage != null) {
-            moveModeLockedSectionOffsets?.get("games") ?: targetSectionSeparation("games")
-        } else targetSectionSeparation("games"),
-
-        animationSpec = tween(
-            durationMillis = 420,
-            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
-        ),
-        label = "GamesSeparation"
-    )
 
     val contentOffset = remember { Animatable(0f) }
     val appsSeparationState = animateDpAsState(
@@ -3179,6 +3169,7 @@ fun MainScreen(
 
     LaunchedEffect(Unit) {
         var firstTarget = true
+        var previousActiveSectionKey: Int? = null
         var previousSectionOrder: List<String>? = null
 
         snapshotFlow { latestFocusTarget.value }
@@ -3207,17 +3198,23 @@ fun MainScreen(
                     return@collectLatest
                 }
 
+                val sameSection = previousActiveSectionKey == focusTarget.first
+                previousActiveSectionKey = focusTarget.first
+
+                if (sameSection && !firstTarget) {
+                    contentOffset.snapTo(targetPx)
+                    return@collectLatest
+                }
                 if (firstTarget) {
                     firstTarget = false
                     contentOffset.snapTo(targetPx)
-                } else {
+                } else if (kotlin.math.abs(contentOffset.value - targetPx) > 1f) {
                     contentOffset.animateTo(
                         targetValue = targetPx,
                         animationSpec = tween(
                             durationMillis = 420,
                             easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
                         )
-
                     )
                 }
             }
