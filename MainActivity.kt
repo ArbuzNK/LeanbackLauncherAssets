@@ -1864,7 +1864,12 @@ fun LeanbackCard(
     isFastScrolling: Boolean = false
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    var imageAspectRatio by remember(program.posterArtUri) { mutableFloatStateOf(16f / 9f) }
+    var imageAspectRatio by remember(program.posterArtUri) {
+        mutableFloatStateOf(
+            PosterAspectRatioCache[program.posterArtUri?.toString()]
+                ?: (16f / 9f)
+        )
+    }
     var pendingImageAspectRatio by remember(program.posterArtUri) { mutableFloatStateOf(Float.NaN) }
     var dominantPanelColor by remember(program.appPackageName, program.intentUri) {
         mutableStateOf(Color(0xFF37474F))
@@ -1966,6 +1971,10 @@ fun LeanbackCard(
                         val h = result.drawable.intrinsicHeight
                         if (w > 0 && h > 0) {
                             val ratio = w.toFloat() / h.toFloat()
+                            PosterAspectRatioCache.put(
+                                program.posterArtUri?.toString(),
+                                ratio
+                            )
                             if (fastScrollingNow) {
                                 pendingImageAspectRatio = ratio
                             } else if (kotlin.math.abs(imageAspectRatio - ratio) > 0.01f) {
@@ -2117,7 +2126,7 @@ private suspend fun resolveBannerAspectRatio(context: Context, imageUrl: String)
     return try {
         val request = ImageRequest.Builder(context)
             .data(imageUrl)
-            .size(600, 340)
+            .size(450, 260)
             .crossfade(false)
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
@@ -2147,12 +2156,57 @@ private fun calculateImageCardWidth(imageHeight: androidx.compose.ui.unit.Dp, as
     return (imageHeight * safeAspectRatio).coerceIn(110.dp, 335.dp)
 }
 
+private object PosterAspectRatioCache {
+    private const val MAX_ENTRIES = 256
+
+    private val ratios = object : LinkedHashMap<String, Float>(
+        MAX_ENTRIES,
+        0.75f,
+        true
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, Float>?
+        ): Boolean = size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    operator fun get(url: String?): Float? {
+        if (url.isNullOrBlank()) return null
+        return ratios[url]
+    }
+
+    @Synchronized
+    fun put(url: String?, ratio: Float) {
+        if (url.isNullOrBlank()) return
+        if (!ratio.isFinite() || ratio <= 0f) return
+
+        ratios[url] = ratio
+    }
+}
+
 /** Process-wide cache avoids sampling the same application icon for every programme card. */
+/**
+ * Bounded process-wide LRU cache: avoids sampling the same app icon repeatedly
+ * without retaining colors for every package ever seen during a long session.
+ */
 private object AppIconPanelColorCache {
-    private val colors = ConcurrentHashMap<String, Color>()
+    private const val MAX_ENTRIES = 256
 
-    operator fun get(packageName: String): Color? = colors[packageName]
+    private val colors = object : LinkedHashMap<String, Color>(
+        MAX_ENTRIES,
+        0.75f,
+        true
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, Color>?
+        ): Boolean = size > MAX_ENTRIES
+    }
 
+    @Synchronized
+    operator fun get(packageName: String): Color? =
+        colors[packageName]
+
+    @Synchronized
     fun put(packageName: String, color: Color) {
         colors[packageName] = color
     }
@@ -2762,6 +2816,7 @@ fun MainScreen(
     // Уплотняем нижние секции только при фокусе на рекомендациях.
     val compactLowerSections =
         showRecommendations && visualFocusedRowIndex == 0
+    val compactSectionGap = 8.dp
 
     fun sectionGapPx(
         previous: String,
@@ -2769,36 +2824,34 @@ fun MainScreen(
         compact: Boolean
     ): Float = with(density) {
         when {
-            // Каналы располагаются между «Входами» и «Играми».
-            // Каналы располагаются между «Входами» и «Играми».
             previous == "inputs" &&
                     next == "games" &&
                     providerGroups.isNotEmpty() -> {
-                val channelStep = (providerRowHeight + providerRowGap).toPx()
+                val channelStep =
+                    (providerRowHeight + providerRowGap).toPx()
+
                 if (compact) {
-                    (24.dp + 8.dp).toPx() +
+                    compactSectionGap.toPx() +
                             providerRowHeight.toPx() +
                             channelStep * (providerGroups.size - 1).coerceAtLeast(0)
                 } else {
-                    48.dp.toPx() + channelStep * providerGroups.size
+                    48.dp.toPx() +
+                            channelStep * providerGroups.size
                 }
             }
 
+            compact -> compactSectionGap.toPx()
+
             previous == "recommendations" &&
-                    next in setOf("favorites", "apps") ->
-                16.dp.toPx()
+                    next in setOf("favorites", "apps") -> 16.dp.toPx()
 
-            previous == "favorites" && next == "apps" ->
-                16.dp.toPx()
+            previous == "favorites" && next == "apps" -> 16.dp.toPx()
 
-            previous == "apps" && next == "inputs" ->
-                24.dp.toPx()
+            previous == "apps" && next == "inputs" -> 24.dp.toPx()
 
-            previous == "inputs" && next == "games" ->
-                (-3).dp.toPx()
+            previous == "inputs" && next == "games" -> (-3).dp.toPx()
 
-            previous == "games" && next == "apps" ->
-                8.dp.toPx()
+            previous == "games" && next == "apps" -> 8.dp.toPx()
 
             else -> 24.dp.toPx()
         }
@@ -3857,7 +3910,7 @@ fun MainScreen(
                                 }
                             }
                         }
-                        if (titleSectionId == "favorites") {
+                        if (!hideLowerSectionTitles && titleSectionId == "favorites") {
                             Text(
                                 text = "Избранное",
                                 color = Color.White,
@@ -4072,7 +4125,7 @@ fun MainScreen(
                         }
                     }
 
-                    if (titleSectionId == "apps") {
+                    if (!hideLowerSectionTitles && titleSectionId == "apps") {
                         Text(
                             text = "Приложения",
                             color = Color.White,
@@ -4123,8 +4176,8 @@ fun MainScreen(
                             .zIndex(if (visualFocusedRowIndex == inputsRowIndex) 5f else 1f)
                     ) {
                         LazyRow(
-                            state = inputsListState,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            state = gamesListState,
+                            horizontalArrangement = Arrangement.spacedBy(40.dp),
                             contentPadding = PaddingValues(horizontal = 48.dp),
                             modifier = Modifier
                                 .focusRestorer()
@@ -4183,7 +4236,7 @@ fun MainScreen(
                             }
                         }
 
-                        if (titleSectionId == "inputs") {
+                        if (!hideLowerSectionTitles && titleSectionId == "inputs") {
                             Text(
                                 text = "Входы",
                                 color = Color.White,
@@ -4236,7 +4289,7 @@ fun MainScreen(
                     ) {
                         LazyRow(
                             state = gamesListState,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp / gamesRowScale),
                             contentPadding = PaddingValues(horizontal = 48.dp),
                             modifier = Modifier
                                 .focusRestorer()
@@ -4285,7 +4338,7 @@ fun MainScreen(
                                 }
                             }
                         }
-                        if (titleSectionId == "games") {
+                        if (!hideLowerSectionTitles && titleSectionId == "games") {
                             Text(
                                 text = "Игры",
                                 color = Color.White,
