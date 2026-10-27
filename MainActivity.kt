@@ -885,6 +885,7 @@ class MainActivity : ComponentActivity() {
                     tvInputs = tvInputs,
                     apps = visibleApps,
                     games = visibleGames,
+                    providerGroups = visibleProviderGroups,
                     currentBgUri = currentBgUri,
                     showRecommendations = showRecommendations,
                     maxAppsPerRow = maxAppsPerRow,
@@ -1737,96 +1738,55 @@ suspend fun loadProviderChannelGroups(
         )
     }
 }
+
 @Composable
 fun ProviderLogoRow(
     group: ChannelProviderGroup,
     onChannelClick: (Uri?) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isFastScrolling: Boolean = false
 ) {
     val listState = rememberLazyListState()
+    val context = LocalContext.current
 
-    Column(
-        modifier = modifier.fillMaxWidth()
-    ) {
+    Column(modifier = modifier.fillMaxWidth()) {
         Text(
             text = group.title,
             color = Color.White,
-            fontSize = 19.sp,
-            fontWeight = FontWeight.Medium,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Light,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(
-                start = 48.dp,
-                bottom = 10.dp
+                start = 55.dp,
+                bottom = 8.dp
             )
         )
 
         LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            contentPadding = PaddingValues(horizontal = 55.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(85.dp)
         ) {
             items(
                 items = group.channels,
-                key = { it.id }
+                key = { channel -> "provider_${group.packageName}_${channel.id}" },
+                contentType = { "provider_channel_card" }
             ) { channel ->
-                var focused by remember {
-                    mutableStateOf(false)
-                }
-
-                Surface(
-                    onClick = {
-                        onChannelClick(channel.intentUri)
-                    },
-                    modifier = Modifier
-                        .size(width = 180.dp, height = 100.dp)
-                        .onFocusChanged {
-                            focused = it.isFocused
-                        }
-                        .graphicsLayer {
-                            scaleX = if (focused) 1.06f else 1f
-                            scaleY = if (focused) 1.06f else 1f
-                        },
-                    shape = ClickableSurfaceDefaults.shape(
-                        shape = RoundedCornerShape(12.dp)
-                    ),
-                    colors = ClickableSurfaceDefaults.colors(
-                        containerColor = Color(0xFF202020),
-                        focusedContainerColor = Color(0xFF303030)
-                    ),
-                    border = ClickableSurfaceDefaults.border(
-                        focusedBorder = androidx.tv.material3.Border(
-                            border = androidx.compose.foundation.BorderStroke(
-                                2.dp,
-                                Color.White
-                            ),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                    )
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(
-                                androidx.compose.ui.platform.LocalContext.current
-                            )
-                                .data(channel.logoUri)
-                                .crossfade(false)
-                                .memoryCachePolicy(CachePolicy.ENABLED)
-                                .diskCachePolicy(CachePolicy.ENABLED)
-                                .build(),
-                            contentDescription = null,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxWidth(0.82f)
-                                .fillMaxHeight(0.78f)
-                        )
-                    }
-                }
+                AppCard(
+                    painter = rememberAsyncImagePainter(channel.logoUri),
+                    onClick = { onChannelClick(channel.intentUri) },
+                    isFastScrolling = isFastScrolling,
+                    modifier = Modifier.size(130.dp, 74.dp)
+                )
             }
         }
     }
 }
+
 
 @Composable
 fun getAppOrChannelTitle(program: LiveProgramInfo): String {
@@ -2456,9 +2416,15 @@ fun MainScreen(
     favoritePackages: Set<String> = emptySet(),
     favoriteCustomOrder: List<String> = emptyList(),
     onToggleFavorite: (String) -> Unit = {},
-    onMoveApp: (packageName: String, direction: Int, isGame: Boolean, originSection: String) -> Unit = { _, _, _, _ -> },
+    onMoveApp: (
+        packageName: String,
+        direction: Int,
+        isGame: Boolean,
+        originSection: String
+    ) -> Unit = { _, _, _, _ -> },
     providerGroups: List<ChannelProviderGroup> = emptyList()
 ) {
+
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
     val hostView = LocalView.current
@@ -2746,6 +2712,13 @@ fun MainScreen(
         compact: Boolean
     ): Float = with(density) {
         when {
+            // Каналы располагаются между «Входами» и «Играми».
+            previous == "inputs" &&
+                    next == "games" &&
+                    providerGroups.isNotEmpty() ->
+                48.dp.toPx() +
+                        (providerRowHeight + providerRowGap).toPx() *
+                        providerGroups.size
             compact -> when {
                 previous == "favorites" && next == "apps" ->
                     8.dp.toPx()
@@ -2808,7 +2781,7 @@ fun MainScreen(
     val gamesRowTopPx = sectionTopPositionsPx["games"] ?: (
             appsRowTopPx + with(density) { appSectionHeight.toPx() } + with(density) { 24.dp.toPx() }
             )
-    val providerRowsStartPx = gamesRowTopPx +
+    val providerRowsStartPx = inputsRowTopPx +
             with(density) { 85.dp.toPx() } +
             with(density) { 24.dp.toPx() }
 
