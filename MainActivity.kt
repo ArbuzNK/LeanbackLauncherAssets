@@ -1670,7 +1670,7 @@ suspend fun loadProviderChannelGroups(
             projection,
             null,
             null,
-            "${TvContract.Channels.COLUMN_DISPLAY_NAME} COLLATE NOCASE ASC"
+            "${TvContract.Channels.COLUMN_DISPLAY_NAME} ASC"
         )?.use { cursor ->
             val idIndex = cursor.getColumnIndex(TvContract.Channels._ID)
             val packageIndex =
@@ -2457,7 +2457,7 @@ fun MainScreen(
     favoriteCustomOrder: List<String> = emptyList(),
     onToggleFavorite: (String) -> Unit = {},
     onMoveApp: (packageName: String, direction: Int, isGame: Boolean, originSection: String) -> Unit = { _, _, _, _ -> },
-    providerGroups = visibleProviderGroups,
+    providerGroups: List<ChannelProviderGroup> = emptyList()
 ) {
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
@@ -3305,27 +3305,6 @@ fun MainScreen(
                     moveModeConsumedKeyUp = KeyEvent.KEYCODE_UNKNOWN
                     return@onPreviewKeyEvent true
                 }
-                providerGroups.forEach { group ->
-                    val rowTop = providerRowPositions[group.packageName]
-                        ?: return@forEach
-
-                    key(group.packageName) {
-                        ProviderLogoRow(
-                            group = group,
-                            onChannelClick = onProgramClick,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .offset {
-                                    IntOffset(
-                                        x = 0,
-                                        y = rowTop.roundToInt()
-                                    )
-                                }
-                                .fillMaxWidth()
-                                .height(providerRowHeight)
-                        )
-                    }
-                }
 
                 val isMoveModeKey = when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_LEFT,
@@ -3469,6 +3448,24 @@ fun MainScreen(
                     }
                 }
         ) {
+            providerGroups.forEach { group ->
+                val rowTop = providerRowPositions[group.packageName]
+                    ?: return@forEach
+
+                key(group.packageName) {
+                    ProviderLogoRow(
+                        group = group,
+                        onChannelClick = onProgramClick,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset {
+                                IntOffset(0, rowTop.roundToInt())
+                            }
+                            .fillMaxWidth()
+                            .height(providerRowHeight)
+                    )
+                }
+            }
             // ВЕРХНЯЯ ПАНЕЛЬ
             Row(
                 modifier = Modifier
