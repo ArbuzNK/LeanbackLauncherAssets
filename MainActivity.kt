@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
@@ -12,6 +13,7 @@ import android.graphics.Color as AndroidGraphicsColor
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.tv.TvContract
 import android.media.tv.TvInputInfo
@@ -25,6 +27,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import android.view.SoundEffectConstants
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -115,6 +118,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import android.media.SoundPool
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -235,7 +243,7 @@ fun LoadingBanner(modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = "Загрузка рекомендаций...",
+            text = stringResource(R.string.loading_recommendations),
             color = Color(0xAAFFFFFF),
             fontSize = 16.sp,
             fontWeight = FontWeight.Light
@@ -485,25 +493,33 @@ fun prefetchBannerSizes(context: Context, programs: Sequence<LiveProgramInfo>) {
         .mapNotNull { it.posterArtUri }
         .distinct()
         .take(30)
-        .forEachIndexed { index, uri ->
-            val fullSize = index < 12
+        .forEach { uri ->
             val request = ImageRequest.Builder(context)
                 .data(uri)
-                .size(if (fullSize) 600 else 64, if (fullSize) 340 else 64)
+                .size(600, 340)
                 .crossfade(false)
-                .allowHardware(fullSize)
+                .allowHardware(true)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
                 .listener(
                     onSuccess = { _, result ->
+                        (result.drawable as? BitmapDrawable)?.bitmap?.let { bitmap ->
+                            PosterBitmapCache.put(uri.toString(), bitmap)
+                        }
+
                         val w = result.drawable.intrinsicWidth
                         val h = result.drawable.intrinsicHeight
+
                         if (w > 0 && h > 0) {
-                            PosterAspectRatioCache.put(uri.toString(), w.toFloat() / h.toFloat())
+                            PosterAspectRatioCache.put(
+                                uri.toString(),
+                                w.toFloat() / h.toFloat()
+                            )
                         }
                     }
                 )
                 .build()
+
             imageLoader.enqueue(request)
         }
 }
@@ -544,9 +560,9 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf("com.android.providers.tv.permission.READ_EPG_DATA"), 1001)
         }
 
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val sharedPrefs = getSharedPreferences("launcher_settings", Context.MODE_PRIVATE)
+        val sharedPrefs = getSharedPreferences("launcher_settings", MODE_PRIVATE)
 
         val savedHidden = sharedPrefs.getStringSet("hidden_packages", emptySet()) ?: emptySet()
         val savedEnabled = sharedPrefs.getStringSet("enabled_channel_ids", null)?.mapNotNull { it.toLongOrNull() }
@@ -640,7 +656,7 @@ class MainActivity : ComponentActivity() {
             var liveChannels by remember { mutableStateOf<List<LiveChannelInfo>>(emptyList()) }
 
             val context = LocalContext.current
-            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+            val lifecycleOwner = LocalLifecycleOwner.current
             val coroutineScope = rememberCoroutineScope()
 
             fun reloadInputs() {
@@ -666,7 +682,7 @@ class MainActivity : ComponentActivity() {
             // HDMI-CEC child inputs can be added/removed or renamed when a device
             // is connected/disconnected; state callbacks also refresh the row.
             DisposableEffect(context) {
-                val manager = context.getSystemService(Context.TV_INPUT_SERVICE) as? TvInputManager
+                val manager = context.getSystemService(TV_INPUT_SERVICE) as? TvInputManager
                 if (manager == null) {
                     onDispose { }
                 } else {
@@ -783,7 +799,7 @@ class MainActivity : ComponentActivity() {
                                     LiveChannelInfo(
                                         id = -1L,
                                         packageName = "system.watch_next",
-                                        displayName = "Продолжить просмотр",
+                                        displayName = context.getString(R.string.continue_watching),
                                         programs = watchNextProgs
                                     )
                                 )
@@ -823,7 +839,7 @@ class MainActivity : ComponentActivity() {
                 val contentResolver = context.contentResolver
 
                 var observerReloadJob: Job? = null
-                val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+                val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
                     override fun onChange(selfChange: Boolean) {
                         super.onChange(selfChange)
                         observerReloadJob?.cancel()
@@ -868,8 +884,8 @@ class MainActivity : ComponentActivity() {
             var isFirstLaunch by remember { mutableStateOf(true) }
 
             DisposableEffect(lifecycleOwner) {
-                val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) {
                         reloadInputs()
                         if (isFirstLaunch) {
                             isFirstLaunch = false
@@ -1214,7 +1230,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun getTvInputs(context: Context): List<TvInputItem> {
-        val tvInputManager = context.getSystemService(Context.TV_INPUT_SERVICE) as? TvInputManager
+        val tvInputManager = context.getSystemService(TV_INPUT_SERVICE) as? TvInputManager
             ?: return emptyList()
 
         val systemInputs = tvInputManager.tvInputList
@@ -1425,9 +1441,10 @@ class MainActivity : ComponentActivity() {
 
         return gamePackages
     }
-
     @SuppressLint("RestrictedApi")
-    private fun discoverRecommendationChannels(context: Context): List<RecChannelInfo> {
+    private fun discoverRecommendationChannels(
+        context: Context
+    ): List<RecChannelInfo> {
         val result = mutableListOf<RecChannelInfo>()
         val pm = context.packageManager
         var hasTvirl = false
@@ -1465,7 +1482,10 @@ class MainActivity : ComponentActivity() {
                     val fullTitle = when {
                         appLabel.isNotEmpty() && !channelName.contains(appLabel, ignoreCase = true) -> "$appLabel • $channelName"
                         channelName.isNotEmpty() -> channelName
-                        else -> "Канал №$channelId"
+                        else -> context.getString(
+                            R.string.channel_number,
+                            channelId
+                        )
                     }
 
                     result.add(RecChannelInfo(channelId = channelId, packageName = pkg, name = fullTitle))
@@ -2050,25 +2070,24 @@ fun LeanbackCard(
                 when {
                     program.posterArtUri != null -> {
                         Box(modifier = Modifier.fillMaxSize()) {
-                            AsyncImage(
-                                model = imageRequest,
-                                contentDescription = program.title,
-                                contentScale = ContentScale.Fit,
-                                colorFilter = ColorFilter.tint(Color(0x14000000)),
-                                modifier = Modifier.fillMaxSize()
+                            val cachedPoster = PosterBitmapCache.get(
+                                program.posterArtUri.toString()
                             )
 
-                            if (isFastScrolling) {
-                                PosterBitmapCache
-                                    .get(program.posterArtUri.toString())
-                                    ?.let { cachedPoster ->
-                                        Image(
-                                            bitmap = cachedPoster.asImageBitmap(),
-                                            contentDescription = program.title,
-                                            contentScale = ContentScale.Fit,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    }
+                            if (cachedPoster != null) {
+                                Image(
+                                    bitmap = cachedPoster.asImageBitmap(),
+                                    contentDescription = program.title,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                AsyncImage(
+                                    model = imageRequest,
+                                    contentDescription = program.title,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             }
                         }
                     }
@@ -2716,6 +2735,38 @@ fun MainScreen(
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
     val hostView = LocalView.current
+
+    var tickSoundId by remember { mutableIntStateOf(0) }
+    var tickSoundLoaded by remember { mutableStateOf(false) }
+
+    val navigationSoundPool = remember(context) {
+        SoundPool.Builder()
+            .setMaxStreams(2)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            .build()
+    }
+
+    DisposableEffect(navigationSoundPool) {
+        navigationSoundPool.setOnLoadCompleteListener { _, _, status ->
+            tickSoundLoaded = status == 0
+        }
+
+        tickSoundId = navigationSoundPool.load(
+            context,
+            R.raw.effect_tick_48k,
+            1
+        )
+
+        onDispose {
+            navigationSoundPool.setOnLoadCompleteListener(null)
+            navigationSoundPool.release()
+        }
+    }
 
     // playSoundEffect() is gated by the host View's sound-effects flag.
     // Enable it for this launcher surface; Android's global system-sounds setting
@@ -3525,7 +3576,15 @@ fun MainScreen(
                 previousActiveSectionKey = focusTarget.first
 
                 if (sameSection && !firstTarget) {
-                    contentOffset.snapTo(targetPx)
+                    if (kotlin.math.abs(contentOffset.value - targetPx) > 1f) {
+                        contentOffset.animateTo(
+                            targetValue = targetPx,
+                            animationSpec = tween(
+                                durationMillis = 180,
+                                easing = FastOutSlowInEasing
+                            )
+                        )
+                    }
                     return@collectLatest
                 }
                 if (firstTarget) {
@@ -3533,10 +3592,10 @@ fun MainScreen(
                     contentOffset.snapTo(targetPx)
                 } else if (kotlin.math.abs(contentOffset.value - targetPx) > 1f) {
                     contentOffset.animateTo(
-                        targetValue = targetPx,
+                        targetPx,
                         animationSpec = tween(
-                            durationMillis = 420,
-                            easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
+                            durationMillis = 180,
+                            easing = FastOutSlowInEasing
                         )
                     )
                 }
@@ -3828,7 +3887,18 @@ fun MainScreen(
                             KeyEvent.KEYCODE_DPAD_DOWN -> SoundEffectConstants.NAVIGATION_DOWN
                             else -> null
                         }
-                        navigationSound?.let { hostView.playSoundEffect(it) }
+                        navigationSound?.let {
+                            if (tickSoundLoaded && tickSoundId != 0) {
+                                navigationSoundPool.play(
+                                    tickSoundId,
+                                    0.55f,
+                                    0.55f,
+                                    1,
+                                    0,
+                                    1.0f
+                                )
+                            }
+                        }
                     }
 
                     if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
@@ -4275,7 +4345,7 @@ fun MainScreen(
                             label = "FavoritesTitleAlpha"
                         )
                         Text(
-                            text = "Избранное",
+                            text = stringResource(R.string.section_favorites),
                             color = Color.White,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Light,
@@ -4404,7 +4474,7 @@ fun MainScreen(
                         label = "AppsTitleAlpha"
                     )
                     Text(
-                        text = "Приложения",
+                        text = stringResource(R.string.section_apps),
                         color = Color.White,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Light,
@@ -4482,14 +4552,20 @@ fun MainScreen(
                                                     Log.w("TvInput", "Не удалось открыть вход ${input.label}", error)
                                                     Toast.makeText(
                                                         context,
-                                                        "Не удалось открыть ${input.label}",
+                                                        context.getString(
+                                                            R.string.input_open_failed,
+                                                            input.label
+                                                        ),
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                 }
                                         } else {
                                             Toast.makeText(
                                                 context,
-                                                "Для ${input.label} нет команды переключения",
+                                                context.getString(
+                                                    R.string.input_switch_unavailable,
+                                                    input.label
+                                                ),
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         }
@@ -4519,7 +4595,7 @@ fun MainScreen(
                             label = "InputsTitleAlpha"
                         )
                         Text(
-                            text = "Входы",
+                            text = stringResource(R.string.section_inputs),
                             color = Color.White,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Light,
@@ -4625,7 +4701,7 @@ fun MainScreen(
                             label = "GamesTitleAlpha"
                         )
                         Text(
-                            text = "Игры",
+                            text = stringResource(R.string.section_games),
                             color = Color.White,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Light,
@@ -4659,7 +4735,10 @@ fun MainScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
-                        text = "Перемещение: $movingAppName",
+                        text = stringResource(
+                            R.string.move_app_title,
+                            movingAppName
+                        ),
                         color = Color.White,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
@@ -4744,7 +4823,7 @@ fun MainScreen(
                                 contentAlignment = Alignment.CenterStart
                             ) {
                                 Text(
-                                    text = if (selectedIsFavorite) "Убрать из избранного" else "Добавить в избранное",
+                                    text = if (selectedIsFavorite) stringResource(R.string.favorite_add) else stringResource(R.string.favorite_remove),
                                     color = Color.White,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Light
@@ -4786,7 +4865,7 @@ fun MainScreen(
                                 contentAlignment = Alignment.CenterStart
                             ) {
                                 Text(
-                                    text = "Переместить с помощью пульта",
+                                    text = stringResource(R.string.move_with_remote),
                                     color = Color.White,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Light
@@ -4997,7 +5076,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "Максимум приложений в ряду",
+                        text = stringResource(R.string.settings_max_apps_per_row),
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium
@@ -5008,7 +5087,7 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Остальные перейдут на следующую строку",
+                            text = stringResource(R.string.settings_apps_next_row_hint),
                             color = Color(0xFFAAAAAA),
                             fontSize = 11.sp,
                             modifier = Modifier.weight(1f).padding(end = 8.dp)
@@ -5066,7 +5145,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "Порядок разделов",
+                        text = stringResource(R.string.settings_section_order),
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium
@@ -5156,13 +5235,19 @@ fun SettingsScreen(
                     ) {
                         Column {
                             Text(
-                                text = "Звук при выборе входа",
+                                text = stringResource(R.string.input_switch_sound),
                                 color = Color.White,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = if (inputSwitchSoundEnabled) "Включён" else "Выключен",
+                                text = stringResource(
+                                    if (inputSwitchSoundEnabled) {
+                                        R.string.input_switch_sound_enabled
+                                    } else {
+                                        R.string.input_switch_sound_disabled
+                                    }
+                                ),
                                 color = Color(0xFFB0B0B0),
                                 fontSize = 12.sp
                             )
@@ -5196,7 +5281,7 @@ fun SettingsScreen(
             if (showRecommendations) {
                 item {
                     Text(
-                        text = "Управление рекомендациями",
+                        text = stringResource(R.string.recommendation_management),
                         color = Color(0xFF888888),
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
@@ -5336,7 +5421,13 @@ fun SettingsScreen(
                                 ) {
                                     Text(text = channel.name, color = Color.White, fontSize = 14.sp)
                                     Text(
-                                        text = if (isMixed) "В МИКСЕ" else "ОТДЕЛЬНО",
+                                        text = stringResource(
+                                            if (isMixed) {
+                                                R.string.recommendation_in_mix
+                                            } else {
+                                                R.string.recommendation_separate
+                                            }
+                                        ),
                                         color = if (isMixed) Color(0xFF34A853) else Color.Gray,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold
@@ -5355,7 +5446,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "Каналы приложений",
+                        text = stringResource(R.string.recommendation_app_channels),
                         color = Color.White,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium
@@ -5369,7 +5460,7 @@ fun SettingsScreen(
 
                     if (channelProviders.isEmpty()) {
                         Text(
-                            text = "Каналы пока не найдены",
+                            text = stringResource(R.string.recommendation_channels_not_found),
                             color = Color(0xFFAAAAAA),
                             fontSize = 13.sp
                         )
