@@ -2738,24 +2738,46 @@ fun MainScreen(
 
     var tickSoundId by remember { mutableIntStateOf(0) }
     var tickSoundLoaded by remember { mutableStateOf(false) }
+    var lastNavigationSoundTime by remember {
+        mutableLongStateOf(0L)
+    }
 
     val navigationSoundPool = remember(context) {
         SoundPool.Builder()
             .setMaxStreams(2)
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
             .build()
     }
 
     DisposableEffect(navigationSoundPool) {
-        navigationSoundPool.setOnLoadCompleteListener { _, _, status ->
+        navigationSoundPool.setOnLoadCompleteListener { _, sampleId, status ->
+            android.util.Log.d(
+                "LauncherSound",
+                "Загрузка: sampleId=$sampleId, status=$status"
+            )
             tickSoundLoaded = status == 0
         }
 
+        navigationSoundPool.setOnLoadCompleteListener { _, sampleId, status ->
+            android.util.Log.d(
+                "LauncherSound",
+                "Загрузка: sampleId=$sampleId, status=$status"
+            )
+            tickSoundLoaded = status == 0
+        }
+
+        navigationSoundPool.setOnLoadCompleteListener { _, sampleId, status ->
+            android.util.Log.d(
+                "LauncherSound",
+                "Загрузка: sampleId=$sampleId, status=$status"
+            )
+            tickSoundLoaded = status == 0
+        }
         tickSoundId = navigationSoundPool.load(
             context,
             R.raw.effect_tick_48k,
@@ -3888,11 +3910,19 @@ fun MainScreen(
                             else -> null
                         }
                         navigationSound?.let {
-                            if (tickSoundLoaded && tickSoundId != 0) {
+                            val now = android.os.SystemClock.elapsedRealtime()
+
+                            if (
+                                tickSoundLoaded &&
+                                tickSoundId != 0 &&
+                                now - lastNavigationSoundTime >= 100L
+                            ) {
+                                lastNavigationSoundTime = now
+
                                 navigationSoundPool.play(
                                     tickSoundId,
-                                    0.55f,
-                                    0.55f,
+                                    1.0f,
+                                    1.0f,
                                     1,
                                     0,
                                     1.0f
