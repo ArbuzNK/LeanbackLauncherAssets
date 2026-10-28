@@ -2049,22 +2049,7 @@ fun LeanbackCard(
             ) {
                 when {
                     program.posterArtUri != null -> {
-                        // Быстрая прокрутка: рисуем ранее декодированный hardware-битмап
-                        // напрямую — декод, сеть и загрузка текстур уже сделаны. Постеры,
-                        // которые ещё не показывались, появятся сразу после остановки.
-                        val cachedPoster = PosterBitmapCache.get(program.posterArtUri.toString())
-                        if (isFastScrolling) {
-                            if (cachedPoster != null) {
-                                Image(
-                                    bitmap = cachedPoster.asImageBitmap(),
-                                    contentDescription = program.title,
-                                    contentScale = ContentScale.Fit,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                        } else {
-                            // Затемнение — через colorFilter, а не отдельным Box:
-                            // без лишнего layout-узла и draw на каждой карточке ленты.
+                        Box(modifier = Modifier.fillMaxSize()) {
                             AsyncImage(
                                 model = imageRequest,
                                 contentDescription = program.title,
@@ -2072,6 +2057,19 @@ fun LeanbackCard(
                                 colorFilter = ColorFilter.tint(Color(0x14000000)),
                                 modifier = Modifier.fillMaxSize()
                             )
+
+                            if (isFastScrolling) {
+                                PosterBitmapCache
+                                    .get(program.posterArtUri.toString())
+                                    ?.let { cachedPoster ->
+                                        Image(
+                                            bitmap = cachedPoster.asImageBitmap(),
+                                            contentDescription = program.title,
+                                            contentScale = ContentScale.Fit,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                            }
                         }
                     }
                     program.drawableResId != null -> {
@@ -2872,9 +2870,6 @@ fun MainScreen(
             }
         }
     }
-    var isTopPanelFocused by remember {
-        mutableStateOf(false)
-    }
     val favoriteFocusKeys = favoriteRowApps.map { it.packageName }
     val favoriteFocusRequesterCache = remember { mutableMapOf<String, FocusRequester>() }
     val favoriteFocusRequesters = remember(favoriteFocusKeys) {
@@ -3414,11 +3409,10 @@ fun MainScreen(
         targetValue = if (moveModePackage != null) {
             moveModeLockedSectionOffsets?.get("recommendations")
                 ?: targetSectionSeparation("recommendations")
-        } else if (focusedRowIndex == -1) {
-            0.dp
         } else {
             targetSectionSeparation("recommendations")
         },
+
         animationSpec = tween(
             durationMillis = 420,
             easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
@@ -3993,9 +3987,8 @@ fun MainScreen(
                         .size(49.dp)
                         .offset(x = 10.dp)
                         .onFocusChanged {
-                            isTopPanelFocused = it.isFocused
-
                             if (it.isFocused) {
+                                focusedRowIndex = -1
                                 activeRowTitle = null
                             }
                         }
