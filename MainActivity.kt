@@ -103,12 +103,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.ConcurrentHashMap
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
+import androidx.compose.ui.text.font.FontStyle
+
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -2057,10 +2063,13 @@ fun LeanbackCard(
                                 )
                             }
                         } else {
+                            // Затемнение — через colorFilter, а не отдельным Box:
+                            // без лишнего layout-узла и draw на каждой карточке ленты.
                             AsyncImage(
                                 model = imageRequest,
                                 contentDescription = program.title,
                                 contentScale = ContentScale.Fit,
+                                colorFilter = ColorFilter.tint(Color(0x14000000)),
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
@@ -2608,35 +2617,68 @@ private fun LauncherBackground(
     backgroundUri: String?,
     offsetY: Float
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        AsyncImage(
-            model = backgroundUri ?: R.drawable.bg_default,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
+    var containerHeight by remember { mutableIntStateOf(0) }
+
+    val maskBrush = remember {
+        Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to Color.Transparent,
+                0.30f to Color(0x18000000),
+                0.58f to Color(0x70000000),
+                0.95f to Color.Black,
+                1.00f to Color.Black
+            )
+        )
+    }
+
+    // Весь фон — два слоя вместо четырёх: каждый полноэкранный композитинг
+    // на слабой приставке дорог, особенно на каждом кадре анимации параллакса.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .onSizeChanged { containerHeight = it.height }
+    ) {
+        // Слой 1: обои + затемнение + градиент-маска в одном graphicsLayer.
+        // Вертикальное растяжение 1.05 совмещено для всех трёх: на Crop-обоях
+        // оно незаметно, а плоский цвет затемнения его вообще не чувствует.
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
                     translationY = offsetY
+                    scaleY = 1.05f
+                    transformOrigin = TransformOrigin(0.5f, 1f)
                 }
-        )
-
-        val scrimGradient = remember {
-            Brush.verticalGradient(
-                colorStops = arrayOf(
-                    0.0f to Color.Transparent,
-                    0.5f to Color(0x22000000),
-                    0.7f to Color(0xCC000000),
-                    0.85f to Color.Black,
-                    1.0f to Color.Black
-                ),
-                startY = 0f
+        ) {
+            AsyncImage(
+                model = backgroundUri ?: R.drawable.bg_default,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.18f))
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(maskBrush)
             )
         }
 
+        // Слой 2: непрозрачное перекрытие нижней границы обоев.
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .background(scrimGradient)
+                .fillMaxWidth()
+                .height(500.dp)
+                .align(Alignment.TopStart)
+                .graphicsLayer {
+                    translationY = containerHeight.toFloat() + offsetY - 1f
+                }
+                .background(Color.Black)
         )
     }
 }
@@ -2769,6 +2811,25 @@ fun MainScreen(
             }
         }.let { ordered -> if ("apps" in ordered) ordered else listOf("apps") }
     }
+    val layoutSectionOrder = remember(
+        sectionOrder,
+        hasFavoritesSection,
+        hasInputsSection,
+        games
+    ) {
+        sectionOrder.filter { sectionKey ->
+            when (sectionKey) {
+                "recommendations" -> true
+                "favorites" -> hasFavoritesSection
+                "apps" -> true
+                "inputs" -> hasInputsSection
+                "games" -> games.isNotEmpty()
+                else -> false
+            }
+        }.let { ordered ->
+            if ("apps" in ordered) ordered else listOf("apps")
+        }
+    }
 
     // Row indices are derived from the visible section order instead of hardcoded
     // positions. Reordering sections in Settings therefore keeps focus tracking,
@@ -2810,6 +2871,9 @@ fun MainScreen(
                 } ?: FocusRequester()
             }
         }
+    }
+    var isTopPanelFocused by remember {
+        mutableStateOf(false)
     }
     val favoriteFocusKeys = favoriteRowApps.map { it.packageName }
     val favoriteFocusRequesterCache = remember { mutableMapOf<String, FocusRequester>() }
@@ -3169,11 +3233,12 @@ fun MainScreen(
     // GPU layers instead of jumping through a full relayout of every section.
     fun computeSectionPositions(compact: Boolean): Map<String, Float> {
         val positions = mutableMapOf<String, Float>()
-        if (visibleSectionOrder.isNotEmpty()) {
-            positions[visibleSectionOrder.first()] = defaultRecommendationsTopPx
-            for (index in 0 until visibleSectionOrder.lastIndex) {
-                val previous = visibleSectionOrder[index]
-                val next = visibleSectionOrder[index + 1]
+
+        if (layoutSectionOrder.isNotEmpty()) {
+            positions[layoutSectionOrder.first()] = defaultRecommendationsTopPx
+            for (index in 0 until layoutSectionOrder.lastIndex) {
+                val previous = layoutSectionOrder[index]
+                val next = layoutSectionOrder[index + 1]
                 positions[next] = positions.getValue(previous) +
                         sectionHeightsPx.getValue(previous) +
                         sectionGapPx(previous, next, compact)
@@ -3183,7 +3248,7 @@ fun MainScreen(
     }
 
     val normalPositions = remember(
-        visibleSectionOrder,
+        layoutSectionOrder,
         sectionHeightsPx,
         defaultRecommendationsTopPx,
         providerGroups,
@@ -3192,7 +3257,7 @@ fun MainScreen(
     ) { computeSectionPositions(compact = false) }
 
     val compactPositions = remember(
-        visibleSectionOrder,
+        layoutSectionOrder,
         sectionHeightsPx,
         defaultRecommendationsTopPx,
         providerGroups,
@@ -3349,10 +3414,11 @@ fun MainScreen(
         targetValue = if (moveModePackage != null) {
             moveModeLockedSectionOffsets?.get("recommendations")
                 ?: targetSectionSeparation("recommendations")
+        } else if (focusedRowIndex == -1) {
+            0.dp
         } else {
             targetSectionSeparation("recommendations")
         },
-
         animationSpec = tween(
             durationMillis = 420,
             easing = CubicBezierEasing(0.0f, 0.25f, 0.25f, 1.0f)
@@ -3871,6 +3937,25 @@ fun MainScreen(
                     )
                 }
             }
+            val voiceHints = remember {
+                context.resources
+                    .getStringArray(R.array.search_orb_text_to_show)
+                    .toList()
+            }
+
+            var voiceHintIndex by remember {
+                mutableIntStateOf(0)
+            }
+
+            LaunchedEffect(voiceHints.size) {
+                if (voiceHints.isNotEmpty()) {
+                    while (true) {
+                        delay(5_000L)
+                        voiceHintIndex =
+                            (voiceHintIndex + 1) % voiceHints.size
+                    }
+                }
+            }
             // ВЕРХНЯЯ ПАНЕЛЬ
             Row(
                 modifier = Modifier
@@ -3905,10 +3990,12 @@ fun MainScreen(
                         focusedContainerColor = Color(0x44FFFFFF)
                     ),
                     modifier = Modifier
-                        .size(76.dp)
+                        .size(49.dp)
+                        .offset(x = 10.dp)
                         .onFocusChanged {
+                            isTopPanelFocused = it.isFocused
+
                             if (it.isFocused) {
-                                focusedRowIndex = -1
                                 activeRowTitle = null
                             }
                         }
@@ -3917,7 +4004,32 @@ fun MainScreen(
                         Image(
                             painter = painterResource(id = R.drawable.ic_microphone),
                             contentDescription = "Поиск",
-                            modifier = Modifier.size(60.dp).clip(CircleShape)
+                            modifier = Modifier.size(49.dp).clip(CircleShape)
+                        )
+                    }
+                }
+                if (voiceHints.isNotEmpty()) {
+                    AnimatedContent(
+                        targetState = voiceHints[voiceHintIndex],
+                        transitionSpec = {
+                            (
+                                    slideInVertically { height -> height / 2 } +
+                                            fadeIn()
+                                    ) togetherWith (
+                                    slideOutVertically { height -> -height / 2 } +
+                                            fadeOut()
+                                    )
+                        },
+                        label = "voiceHintAnimation"
+                    ) { hint ->
+                        Text(
+                            text = hint,
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 18.sp,
+                            fontStyle = FontStyle.Italic,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.width(598.dp)
                         )
                     }
                 }
