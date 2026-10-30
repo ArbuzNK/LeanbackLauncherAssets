@@ -3451,7 +3451,6 @@ fun MainScreen(
                     providerGroups.isNotEmpty() -> {
                 val channelStep =
                     (providerRowHeight + providerRowGap).toPx()
-
                 if (compact) {
                     compactSectionGap.toPx() +
                             providerRowHeight.toPx() +
@@ -3483,19 +3482,51 @@ fun MainScreen(
     // leaving recommendations must not relayout any section. The compact shift
     // is applied as a draw-time translationY, so the whole lower half slides as
     // GPU layers instead of jumping through a full relayout of every section.
+    // Recommendations are the fixed vertical anchor.
+    // Sections before them are laid out upwards, sections after them downwards.
     fun computeSectionPositions(compact: Boolean): Map<String, Float> {
         val positions = mutableMapOf<String, Float>()
+        val anchorIndex = layoutSectionOrder.indexOf("recommendations")
 
-        if (layoutSectionOrder.isNotEmpty()) {
+        if (anchorIndex >= 0) {
+            positions["recommendations"] = defaultRecommendationsTopPx
+
+            // Секции после рекомендаций.
+            if (anchorIndex < layoutSectionOrder.lastIndex) {
+                for (index in anchorIndex + 1..layoutSectionOrder.lastIndex) {
+                    val previous = layoutSectionOrder[index - 1]
+                    val next = layoutSectionOrder[index]
+
+                    positions[next] = positions.getValue(previous) +
+                            sectionHeightsPx.getValue(previous) +
+                            sectionGapPx(previous, next, compact)
+                }
+            }
+
+            // Секции перед рекомендациями.
+            if (anchorIndex > 0) {
+                for (index in anchorIndex - 1 downTo 0) {
+                    val previous = layoutSectionOrder[index]
+                    val next = layoutSectionOrder[index + 1]
+
+                    positions[previous] = positions.getValue(next) -
+                            sectionHeightsPx.getValue(previous) -
+                            sectionGapPx(previous, next, compact)
+                }
+            }
+        } else if (layoutSectionOrder.isNotEmpty()) {
             positions[layoutSectionOrder.first()] = defaultRecommendationsTopPx
+
             for (index in 0 until layoutSectionOrder.lastIndex) {
                 val previous = layoutSectionOrder[index]
                 val next = layoutSectionOrder[index + 1]
+
                 positions[next] = positions.getValue(previous) +
                         sectionHeightsPx.getValue(previous) +
                         sectionGapPx(previous, next, compact)
             }
         }
+
         return positions
     }
 
@@ -3554,7 +3585,7 @@ fun MainScreen(
                     with(density) { 24.dp.toPx() }
             )
 
-    val recommendationsTopPx = sectionTopPositionsPx["recommendations"] ?: defaultRecommendationsTopPx
+    val recommendationsTopPx = defaultRecommendationsTopPx
 
     val providerRowsStartPx = inputsRowTopPx +
             with(density) { 85.dp.toPx() } +
@@ -3630,7 +3661,8 @@ fun MainScreen(
         visualFocusedAppsRowOffset in appRows.indices -> "apps"
         hasInputsSection && visualFocusedRowIndex == inputsRowIndex -> "inputs"
         games.isNotEmpty() && visualFocusedRowIndex == gamesRowIndex -> "games"
-        showRecommendations && visualFocusedRowIndex == 0 -> "recommendations"
+        recommendationsRowIndex != null &&
+                visualFocusedRowIndex == recommendationsRowIndex -> "recommendations"
         else -> null
     }
     // Визуальный уход предыдущего раздела при смене фокуса.
@@ -3659,6 +3691,13 @@ fun MainScreen(
                 previousSectionId = currentSectionId
 
                 if (sectionToAnimate == null) {
+                    return@collect
+                }
+
+// Рекомендации перемещаются вверх через recommendationsSeparationState.
+// Не запускаем для них встречную анимацию вниз.
+                if (sectionToAnimate == "recommendations") {
+                    outgoingSectionId = null
                     return@collect
                 }
 
@@ -3711,13 +3750,14 @@ fun MainScreen(
     // Keep inactive sections separated from the active one using the configured order.
     val sectionGap = 32.dp
     fun targetSectionSeparation(sectionKey: String): Dp {
+        if (sectionKey == "recommendations") return 0.dp
         // Keep inter-section offsets based on the section where movement began.
         // Otherwise focus callbacks during reordering can animate neighbouring rows.
         val activeKey = (if (moveModePackage != null) moveModeOriginSection else activeSectionId)
             ?: return 0.dp
 
 // При фокусе на рекомендациях нижние секции образуют единую сетку.
-        if (activeKey == "recommendations") return 0.dp
+        if (activeKey == "recommendations") return 12.dp
 
         val activeIndex = visibleSectionOrder.indexOf(activeKey)
         val targetIndex = visibleSectionOrder.indexOf(sectionKey)
@@ -4446,7 +4486,8 @@ fun MainScreen(
                         IntOffset(x = 0, y = recommendationsTopPx.roundToInt())
                     }
                     .fillMaxWidth()
-                    .wrapContentHeight(),
+                    .wrapContentHeight()
+                    .zIndex(100f),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 if (showRecommendations) {
