@@ -123,6 +123,29 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.media.SoundPool
+import android.app.Activity
+import android.speech.RecognizerIntent
+
+import androidx.compose.animation.core.Animatable
+import kotlinx.coroutines.launch
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutLinearInEasing
+import kotlinx.coroutines.coroutineScope
+
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas as ComposeCanvas
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 
 // === МОДЕЛИ ДАННЫХ ===
 
@@ -236,18 +259,84 @@ private data class DetectedTvInput(
 
 // === ПРОСТОЙ БАННЕР ЗАГРУЗКИ ===
 
+
 @Composable
-fun LoadingBanner(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
+fun LoadingBanner(
+    modifier: Modifier = Modifier,
+    hasRecommendations: Boolean,
+    isLoading: Boolean
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        Text(
-            text = stringResource(R.string.loading_recommendations),
-            color = Color(0xAAFFFFFF),
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Light
-        )
+        if (isLoading) {
+            // Бесконечная анимация создаётся только в ветке загрузки: в состоянии
+            // «нет рекомендаций» она не должна крутить устройство 60 кадров/с
+            // ради статичного экрана с грустным облаком.
+            val transition = rememberInfiniteTransition(label = "loading")
+
+            val progress by transition.animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(
+                        durationMillis = 1800,
+                        easing = LinearEasing
+                    ),
+                    repeatMode = RepeatMode.Restart
+                ),
+                label = "progress"
+            )
+
+            val phase = if (progress < 0.5f) {
+                progress * 2f
+            } else {
+                (1f - progress) * 2f
+            }
+
+            val easedPhase = FastOutSlowInEasing.transform(phase)
+            val sweepAngle = 20f + 280f * easedPhase
+            val rotation = progress * 360f
+
+            ComposeCanvas(modifier = Modifier.size(44.dp)) {
+                rotate(rotation) {
+                    drawArc(
+                        color = Color(0xFF00CFC8),
+                        startAngle = -90f,
+                        sweepAngle = sweepAngle,
+                        useCenter = false,
+                        style = Stroke(
+                            width = 4.dp.toPx(),
+                            cap = StrokeCap.Butt
+                        )
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(55.dp))
+
+            Text(
+                text = stringResource(R.string.preparing_recommendations),
+                color = Color.White.copy(alpha = 0.4f),
+                fontSize = 17.sp
+            )
+        } else if (!hasRecommendations) {
+            Image(
+                painter = painterResource(R.drawable.ic_sad_cloud),
+                contentDescription = null,
+                modifier = Modifier.size(100.dp)
+            )
+
+            Spacer(modifier = Modifier.height(44.dp))
+
+            Text(
+                text = stringResource(R.string.no_recommendations),
+                color = Color.White.copy(alpha = 0.4f),
+                fontSize = 17.sp
+            )
+        }
     }
 }
 
@@ -303,7 +392,7 @@ fun AppCard(
     // TV remotes send DPAD_CENTER/ENTER key events rather than pointer long-clicks.
     // Handle the held key explicitly so long-press opens the card menu on Android TV.
     var dpadSelectDownTime by remember { mutableLongStateOf(-1L) }
-    val cardShape = RoundedCornerShape(0.dp)
+    val cardShape = RoundedCornerShape(3.dp)
 
 
     val scaleAnimated by animateFloatAsState(
@@ -421,7 +510,7 @@ fun InputCard(
             ?.takeIf { it.isNotEmpty() && input.label.startsWith("HDMI", ignoreCase = true) }
         if (deviceName != null) "${input.label}/$deviceName" else input.label
     }
-    val cardShape = RoundedCornerShape(0.dp)
+    val cardShape = RoundedCornerShape(3.dp)
 
     Box(
         modifier = modifier
@@ -493,18 +582,25 @@ fun prefetchBannerSizes(context: Context, programs: Sequence<LiveProgramInfo>) {
         .mapNotNull { it.posterArtUri }
         .distinct()
         .take(30)
-        .forEach { uri ->
+        .forEachIndexed { index, uri ->
+            // Первые 12 — в полном размере: они видны сразу, а их битмапы сразу
+            // попадают в PosterBitmapCache для быстрой прокрутки. Хвост ленты —
+            // крошечным декодом ради пропорций: 30 hardware-битмапов съели бы
+            // ~25 МБ GPU-памяти и устроили шторм декодов на старте.
+            val fullSize = index < 12
             val request = ImageRequest.Builder(context)
                 .data(uri)
-                .size(600, 340)
+                .size(if (fullSize) 600 else 64, if (fullSize) 340 else 64)
                 .crossfade(false)
-                .allowHardware(true)
+                .allowHardware(fullSize)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
                 .listener(
                     onSuccess = { _, result ->
-                        (result.drawable as? BitmapDrawable)?.bitmap?.let { bitmap ->
-                            PosterBitmapCache.put(uri.toString(), bitmap)
+                        if (fullSize) {
+                            (result.drawable as? BitmapDrawable)?.bitmap?.let { bitmap ->
+                                PosterBitmapCache.put(uri.toString(), bitmap)
+                            }
                         }
 
                         val w = result.drawable.intrinsicWidth
@@ -570,6 +666,18 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var isSettingsOpen by remember { mutableStateOf(false) }
+            var quickMenuKeyCode by remember {
+                mutableIntStateOf(
+                    sharedPrefs.getInt(
+                        "quick_menu_key_code",
+                        KeyEvent.KEYCODE_UNKNOWN
+                    )
+                )
+            }
+
+            var isWaitingForQuickMenuKey by remember {
+                mutableStateOf(false)
+            }
             var showRecommendations by remember {
                 mutableStateOf(sharedPrefs.getBoolean("show_recommendations", true))
             }
@@ -825,9 +933,13 @@ class MainActivity : ComponentActivity() {
 
                     // Не удерживаем экран загрузки 5 секунд, когда данные уже готовы.
                     // Короткая минимальная длительность нужна только против мигания индикатора.
+
                     val elapsedTime = System.currentTimeMillis() - startTime
-                    val remainingDelay = 250L - elapsedTime
-                    if (remainingDelay > 0) delay(remainingDelay)
+                    val remainingDelay = 5000L - elapsedTime
+
+                    if (remainingDelay > 0) {
+                        delay(remainingDelay)
+                    }
 
                     withContext(Dispatchers.Main) {
                         isRecommendationsLoading = false
@@ -1189,7 +1301,24 @@ class MainActivity : ComponentActivity() {
                                 sharedPrefs.edit().remove("bg_uri").apply()
                                 currentBgUri = null
                             },
-                            onBack = { isSettingsOpen = false }
+                            onBack = {
+                                isSettingsOpen = false
+                                isWaitingForQuickMenuKey = false
+                            },
+                            quickMenuKeyCode = quickMenuKeyCode,
+                            isWaitingForQuickMenuKey = isWaitingForQuickMenuKey,
+                            onQuickMenuKeyCaptured = { keyCode ->
+                                if (keyCode != KeyEvent.KEYCODE_UNKNOWN) {
+                                    quickMenuKeyCode = keyCode
+                                    sharedPrefs.edit()
+                                        .putInt("quick_menu_key_code", keyCode)
+                                        .apply()
+                                }
+                                isWaitingForQuickMenuKey = false
+                            },
+                            onStartWaitingForQuickMenuKey = {
+                                isWaitingForQuickMenuKey = true
+                            }
                         )
                     }
                 }
@@ -1903,7 +2032,7 @@ fun LeanbackCard(
         label = "ProgramPanelColor"
     )
     val fastScrollingNow by rememberUpdatedState(isFastScrolling)
-    val cardShape = RoundedCornerShape(0.dp)
+    val cardShape = RoundedCornerShape(3.dp)
 
     // Во время быстрого перемещения не меняем ширину уже видимых карточек:
     // декодирование изображения может завершиться в этот момент и вызвать relayout LazyRow.
@@ -2048,7 +2177,7 @@ fun LeanbackCard(
                 transformOrigin = TransformOrigin(0.5f, 0.5f)
             }
             .then(
-                if (isFocused && !isFastScrolling) Modifier.shadow(8.dp, RoundedCornerShape(0.dp), clip = false) else Modifier
+                if (isFocused && !isFastScrolling) Modifier.shadow(8.dp, RoundedCornerShape(3.dp), clip = false) else Modifier
             )
             .onFocusChanged { isFocused = it.isFocused }
             .clickable(
@@ -2664,8 +2793,6 @@ private fun LauncherBackground(
                 .fillMaxSize()
                 .graphicsLayer {
                     translationY = offsetY
-                    scaleY = 1.05f
-                    transformOrigin = TransformOrigin(0.5f, 1f)
                 }
         ) {
             AsyncImage(
@@ -2738,6 +2865,16 @@ fun MainScreen(
 
     var tickSoundId by remember { mutableIntStateOf(0) }
     var tickSoundLoaded by remember { mutableStateOf(false) }
+    var voiceOpenSoundId by remember { mutableIntStateOf(0) }
+    var voiceFailureSoundId by remember { mutableIntStateOf(0) }
+
+    var voiceOpenSoundLoaded by remember { mutableStateOf(false) }
+    var voiceFailureSoundLoaded by remember { mutableStateOf(false) }
+    var voiceSuccessSoundId by remember { mutableIntStateOf(0) }
+    var voiceNoInputSoundId by remember { mutableIntStateOf(0) }
+
+    var voiceSuccessSoundLoaded by remember { mutableStateOf(false) }
+    var voiceNoInputSoundLoaded by remember { mutableStateOf(false) }
     var lastNavigationSoundTime by remember {
         mutableLongStateOf(0L)
     }
@@ -2754,36 +2891,83 @@ fun MainScreen(
             .build()
     }
 
+    val voiceRecognitionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val recognizedText = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.trim()
+
+        if (result.resultCode == Activity.RESULT_OK &&
+            !recognizedText.isNullOrEmpty()
+        ) {
+            if (voiceSuccessSoundLoaded) {
+                navigationSoundPool.play(
+                    voiceSuccessSoundId,
+                    1f, 1f, 1, 0, 1f
+                )
+            }
+
+            Log.d("LauncherVoice", "Речь успешно распознана")
+        } else {
+            if (voiceNoInputSoundLoaded) {
+                navigationSoundPool.play(
+                    voiceNoInputSoundId,
+                    1f, 1f, 1, 0, 1f
+                )
+            }
+
+            Log.d("LauncherVoice", "Речь не распознана или ввод отменён")
+        }
+    }
+
     DisposableEffect(navigationSoundPool) {
         navigationSoundPool.setOnLoadCompleteListener { _, sampleId, status ->
-            android.util.Log.d(
+            val loaded = status == 0
+
+            when (sampleId) {
+                tickSoundId -> tickSoundLoaded = loaded
+                voiceOpenSoundId -> voiceOpenSoundLoaded = loaded
+                voiceFailureSoundId -> voiceFailureSoundLoaded = loaded
+                voiceSuccessSoundId -> voiceSuccessSoundLoaded = loaded
+                voiceNoInputSoundId -> voiceNoInputSoundLoaded = loaded
+            }
+
+            Log.d(
                 "LauncherSound",
                 "Загрузка: sampleId=$sampleId, status=$status"
             )
-            tickSoundLoaded = status == 0
         }
 
-        navigationSoundPool.setOnLoadCompleteListener { _, sampleId, status ->
-            android.util.Log.d(
-                "LauncherSound",
-                "Загрузка: sampleId=$sampleId, status=$status"
-            )
-            tickSoundLoaded = status == 0
-        }
-
-        navigationSoundPool.setOnLoadCompleteListener { _, sampleId, status ->
-            android.util.Log.d(
-                "LauncherSound",
-                "Загрузка: sampleId=$sampleId, status=$status"
-            )
-            tickSoundLoaded = status == 0
-        }
         tickSoundId = navigationSoundPool.load(
             context,
             R.raw.effect_tick_48k,
             1
         )
 
+        voiceOpenSoundId = navigationSoundPool.load(
+            context,
+            R.raw.lb_voice_open,
+            1
+        )
+
+        voiceFailureSoundId = navigationSoundPool.load(
+            context,
+            R.raw.lb_voice_failure,
+            1
+        )
+        voiceSuccessSoundId = navigationSoundPool.load(
+            context,
+            R.raw.lb_voice_success,
+            1
+        )
+
+        voiceNoInputSoundId = navigationSoundPool.load(
+            context,
+            R.raw.lb_voice_no_input,
+            1
+        )
         onDispose {
             navigationSoundPool.setOnLoadCompleteListener(null)
             navigationSoundPool.release()
@@ -3348,7 +3532,12 @@ fun MainScreen(
         ((compactPositions[key] ?: normalPositions[key] ?: 0f) -
                 (normalPositions[key] ?: 0f)) * compactFactor
 
-    val sectionTopPositionsPx = normalPositions
+    val lowerSectionsOffsetPx = with(density) { 16.dp.toPx() }
+
+    val sectionTopPositionsPx = normalPositions.mapValues { (key, topPx) ->
+        if (key == "recommendations") topPx
+        else topPx - lowerSectionsOffsetPx
+    }
     // Раскладочные (статические) позиции — для offset секций.
     val favoritesRowTopPx = sectionTopPositionsPx["favorites"] ?: defaultRecommendationsTopPx
     val appsRowTopPx = sectionTopPositionsPx["apps"] ?: defaultRecommendationsTopPx
@@ -3444,6 +3633,67 @@ fun MainScreen(
         showRecommendations && visualFocusedRowIndex == 0 -> "recommendations"
         else -> null
     }
+    // Визуальный уход предыдущего раздела при смене фокуса.
+    var outgoingSectionId by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    val outgoingSectionOffset = remember {
+        Animatable(0f)
+    }
+
+    val outgoingSectionAlpha = remember {
+        Animatable(1f)
+    }
+
+    LaunchedEffect(Unit) {
+        var previousSectionId: String? = activeSectionId
+
+        snapshotFlow { activeSectionId }
+            .collect { currentSectionId ->
+                if (currentSectionId == previousSectionId) {
+                    return@collect
+                }
+
+                val sectionToAnimate = previousSectionId
+                previousSectionId = currentSectionId
+
+                if (sectionToAnimate == null) {
+                    return@collect
+                }
+
+                outgoingSectionOffset.snapTo(0f)
+                outgoingSectionAlpha.snapTo(1f)
+                outgoingSectionId = sectionToAnimate
+
+                coroutineScope {
+                    launch {
+                        outgoingSectionOffset.animateTo(
+                            targetValue = with(density) { 42.dp.toPx() },
+                            animationSpec = tween(
+                                durationMillis = 300,
+                                easing = FastOutLinearInEasing
+                            )
+                        )
+                    }
+
+                    launch {
+                        outgoingSectionAlpha.animateTo(
+                            targetValue = 0f,
+                            animationSpec = tween(
+                                durationMillis = 300,
+                                easing = FastOutLinearInEasing
+                            )
+                        )
+                    }
+                }
+
+                outgoingSectionOffset.snapTo(0f)
+                outgoingSectionAlpha.snapTo(1f)
+                outgoingSectionId = null
+            }
+    }
+
     // Для заголовков используем именно события реального фокуса, а не расчёт индексов строк.
     val titleSectionId = when (activeRowTitle) {
         "Избранное" -> "favorites"
@@ -3459,7 +3709,7 @@ fun MainScreen(
         recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex
 
     // Keep inactive sections separated from the active one using the configured order.
-    val sectionGap = 24.dp
+    val sectionGap = 32.dp
     fun targetSectionSeparation(sectionKey: String): Dp {
         // Keep inter-section offsets based on the section where movement began.
         // Otherwise focus callbacks during reordering can animate neighbouring rows.
@@ -4060,45 +4310,76 @@ fun MainScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    onClick = {
-                        try {
-                            val intent = Intent(Intent.ACTION_VOICE_COMMAND).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
+                Box(
+                    modifier = Modifier
+                        .size(49.dp)
+                        .offset(x = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Мягкая тень под кнопкой, смещённая вниз-влево
+                    Box(
+                        modifier = Modifier
+                            .offset(x = (-3).dp, y = 3.dp)
+                            .size(30.dp)
+                            .shadow(
+                                elevation = 30.dp,
+                                shape = CircleShape,
+                                clip = false
+                            )
+                            .background(
+                                color = Color.Black.copy(alpha = 0.45f),
+                                shape = CircleShape
+                            )
+                    )
+
+                    Surface(
+                        onClick = {
                             try {
-                                val intent = Intent("android.intent.action.ASSIST").apply {
+                                val intent = Intent(Intent.ACTION_VOICE_COMMAND).apply {
                                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 }
                                 context.startActivity(intent)
-                            } catch (ex: Exception) {
-                                Toast.makeText(context, "Голосовой поиск недоступен", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                try {
+                                    val intent = Intent("android.intent.action.ASSIST").apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
+                                } catch (ex: Exception) {
+                                    Toast.makeText(
+                                        context,
+                                        "Голосовой поиск недоступен",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
                             }
-                        }
-                    },
-                    shape = ClickableSurfaceDefaults.shape(shape = CircleShape),
-                    colors = ClickableSurfaceDefaults.colors(
-                        containerColor = Color.Transparent,
-                        focusedContainerColor = Color(0x44FFFFFF)
-                    ),
-                    modifier = Modifier
-                        .size(49.dp)
-                        .offset(x = 10.dp)
-                        .onFocusChanged {
-                            if (it.isFocused) {
-                                focusedRowIndex = -1
-                                activeRowTitle = null
+                        },
+                        shape = ClickableSurfaceDefaults.shape(shape = CircleShape),
+                        colors = ClickableSurfaceDefaults.colors(
+                            containerColor = Color.Transparent,
+                            focusedContainerColor = Color(0x44FFFFFF)
+                        ),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .onFocusChanged {
+                                if (it.isFocused) {
+                                    focusedRowIndex = -1
+                                    activeRowTitle = null
+                                }
                             }
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                painter = painterResource(id = R.drawable.ic_microphone),
+                                contentDescription = "Поиск",
+                                modifier = Modifier
+                                    .size(49.dp)
+                                    .clip(CircleShape)
+                            )
                         }
-                ) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Image(
-                            painter = painterResource(id = R.drawable.ic_microphone),
-                            contentDescription = "Поиск",
-                            modifier = Modifier.size(49.dp).clip(CircleShape)
-                        )
                     }
                 }
                 if (voiceHints.isNotEmpty()) {
@@ -4184,9 +4465,15 @@ fun MainScreen(
                                 }
                             }
                             .graphicsLayer {
-                                // Separation is a draw-time translation, not a layout
-                                // offset: animating it must not relayout the section.
-                                translationY = recommendationsSeparationState.value.toPx()
+                                // Separation и outgoing-анимация — один слой, не два:
+                                // каждый graphicsLayer это полный композитинг секции.
+                                translationY = recommendationsSeparationState.value.toPx() +
+                                        if (outgoingSectionId == "recommendations") {
+                                            outgoingSectionOffset.value
+                                        } else 0f
+                                if (outgoingSectionId == "recommendations") {
+                                    alpha = outgoingSectionAlpha.value
+                                }
                             }
                             .zIndex(if (recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex) 5f else 1f)
                     ) {
@@ -4201,23 +4488,13 @@ fun MainScreen(
                                 }
                                 .zIndex(if (recommendationsRowIndex != null && visualFocusedRowIndex == recommendationsRowIndex) 5f else 1f)
                         ) {
-                            if (isRecommendationsLoading && mixedPrograms.isEmpty() && promoBanners.isEmpty()) {
-                                LazyRow(
-                                    state = recommendationsListState,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 48.dp, vertical = 20.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .wrapContentHeight()
-                                ) {
-                                    items(1) {
-                                        LoadingBanner()
-                                    }
-                                }
-                            } else {
+                            if (!isRecommendationsLoading) {
                                 val alphaAnimated by animateFloatAsState(
                                     targetValue = 1f,
-                                    animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+                                    animationSpec = tween(
+                                        durationMillis = 600,
+                                        easing = FastOutSlowInEasing
+                                    ),
                                     label = "BannersFadeIn"
                                 )
 
@@ -4244,12 +4521,18 @@ fun MainScreen(
                                         when (feedItem) {
                                             is RecommendationFeedItem.Program -> {
                                                 val program = feedItem.program
-                                                var isCardFocused by remember { mutableStateOf(false) }
+                                                var isCardFocused by remember {
+                                                    mutableStateOf(false)
+                                                }
 
                                                 Box(
                                                     modifier = Modifier
-                                                        .zIndex(if (isCardFocused && !isFastScrolling) 100f else 1f)
-                                                        .onFocusChanged { isCardFocused = it.isFocused }
+                                                        .zIndex(
+                                                            if (isCardFocused && !isFastScrolling) 100f else 1f
+                                                        )
+                                                        .onFocusChanged {
+                                                            isCardFocused = it.isFocused
+                                                        }
                                                 ) {
                                                     LeanbackCard(
                                                         program = program,
@@ -4293,7 +4576,13 @@ fun MainScreen(
                         }
                         .graphicsLayer {
                             translationY = favoritesSeparationState.value.toPx() +
-                                    compactDelta("favorites")
+                                    compactDelta("favorites") +
+                                    if (outgoingSectionId == "favorites") {
+                                        outgoingSectionOffset.value
+                                    } else 0f
+                            if (outgoingSectionId == "favorites") {
+                                alpha = outgoingSectionAlpha.value
+                            }
                         }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
@@ -4403,7 +4692,13 @@ fun MainScreen(
                         }
                         .graphicsLayer {
                             translationY = appsSeparationState.value.toPx() +
-                                    compactDelta("apps")
+                                    compactDelta("apps") +
+                                    if (outgoingSectionId == "apps") {
+                                        outgoingSectionOffset.value
+                                    } else 0f
+                            if (outgoingSectionId == "apps") {
+                                alpha = outgoingSectionAlpha.value
+                            }
                         }
                         .graphicsLayer {
                             alpha = appsRowAlpha
@@ -4531,7 +4826,13 @@ fun MainScreen(
                         }
                         .graphicsLayer {
                             translationY = inputsSeparationState.value.toPx() +
-                                    compactDelta("inputs")
+                                    compactDelta("inputs") +
+                                    if (outgoingSectionId == "inputs") {
+                                        outgoingSectionOffset.value
+                                    } else 0f
+                            if (outgoingSectionId == "inputs") {
+                                alpha = outgoingSectionAlpha.value
+                            }
                         }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
@@ -4653,7 +4954,13 @@ fun MainScreen(
                         }
                         .graphicsLayer {
                             translationY = gamesSeparationState.value.toPx() +
-                                    compactDelta("games")
+                                    compactDelta("games") +
+                                    if (outgoingSectionId == "games") {
+                                        outgoingSectionOffset.value
+                                    } else 0f
+                            if (outgoingSectionId == "games") {
+                                alpha = outgoingSectionAlpha.value
+                            }
                         }
                         .onFocusChanged { focusState ->
                             if (focusState.hasFocus) {
@@ -4972,6 +5279,31 @@ fun MainScreen(
                 }
             }
         }
+        val hasRecommendations = recommendationFeedItems.isNotEmpty()
+
+        if (showRecommendations &&
+            (isRecommendationsLoading || !hasRecommendations)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        translationY = if (moveModePackage != null) {
+                            moveModeLockedContentOffsetPx
+                        } else {
+                            contentOffset.value
+                        }
+                    }
+                    .zIndex(1000f),
+                contentAlignment = Alignment.Center
+            ) {
+                LoadingBanner(
+                    modifier = Modifier.fillMaxSize(),
+                    hasRecommendations = hasRecommendations,
+                    isLoading = isRecommendationsLoading
+                )
+            }
+        }
     }
 }
 
@@ -5002,7 +5334,11 @@ fun SettingsScreen(
     channelProviders: List<ChannelProviderGroup>,
     selectedChannelProviders: Set<String>,
     onToggleChannelProvider: (String) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    quickMenuKeyCode: Int,
+    isWaitingForQuickMenuKey: Boolean,
+    onQuickMenuKeyCaptured: (Int) -> Unit,
+    onStartWaitingForQuickMenuKey: () -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -5094,6 +5430,63 @@ fun SettingsScreen(
                         ) {
                             Box(modifier = Modifier.padding(2.dp).size(20.dp).clip(CircleShape).background(Color.White))
                         }
+                    }
+                }
+            }
+
+            item {
+                Surface(
+                    onClick = onStartWaitingForQuickMenuKey,
+                    shape = ClickableSurfaceDefaults.shape(
+                        shape = RoundedCornerShape(8.dp)
+                    ),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = Color(0x11FFFFFF),
+                        focusedContainerColor = Color(0x33FFFFFF)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(68.dp)
+                        .onPreviewKeyEvent { event ->
+                            if (
+                                isWaitingForQuickMenuKey &&
+                                event.type == KeyEventType.KeyUp
+                            ) {
+                                onQuickMenuKeyCaptured(
+                                    event.nativeKeyEvent.keyCode
+                                )
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "Кнопка быстрого меню",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        Text(
+                            text = when {
+                                isWaitingForQuickMenuKey ->
+                                    "Нажми нужную кнопку на пульте…"
+
+                                quickMenuKeyCode != KeyEvent.KEYCODE_UNKNOWN ->
+                                    "Назначена: ${KeyEvent.keyCodeToString(quickMenuKeyCode)}"
+
+                                else -> "Не назначена"
+                            },
+                            color = Color(0xFFB0B0B0),
+                            fontSize = 12.sp
+                        )
                     }
                 }
             }
